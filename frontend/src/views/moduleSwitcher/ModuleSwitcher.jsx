@@ -2,6 +2,7 @@ import React from 'react';
 
 const ModuleSwitcher = ({ settings, setSettings, currentLanguage, translations }) => {
     const modulesList = [
+        { id: 'tailoring', label: currentLanguage === 'ar' ? 'الخياطة والتفصيل والمشغل' : 'Bespoke Tailoring & Workshop' },
         { id: 'propertyManagement', label: currentLanguage === 'ar' ? 'إدارة العقارات' : 'Real Estate' },
         { id: 'freshFlowers', label: currentLanguage === 'ar' ? 'الزهور الطبيعية والهدايا' : 'Fresh Flowers & Florist' },
         { id: 'invoices', label: currentLanguage === 'ar' ? 'إدارة المبيعات والفواتير' : 'Sales & Invoices' },

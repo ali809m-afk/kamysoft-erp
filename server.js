@@ -467,138 +467,53 @@ function signHashNode(hashHex) {
     return hash;
 }
 
-// Generate ZATCA UBL 2.1 XML
+const zatcaCrypto = require('./utils/zatcaCrypto');
 function generateZATCAXML(invoice, settings) {
-    const datePart = invoice.date.split(' ')[0];
-    const timePart = invoice.date.split(' ')[1] ? invoice.date.split(' ')[1] + ":00" : "12:00:00";
-    
-    let itemsXML = "";
-    invoice.items.forEach((item, index) => {
-        const itemTax = (item.price * item.qty) * (settings.taxRate / 100);
-        const itemLineTotal = (item.price * item.qty) + itemTax;
-        itemsXML += `    <cac:InvoiceLine>
-        <cbc:ID>${index + 1}</cbc:ID>
-        <cbc:InvoicedQuantity unitCode="PCE">${item.qty}</cbc:InvoicedQuantity>
-        <cbc:LineExtensionAmount currencyID="SAR">${(item.price * item.qty).toFixed(2)}</cbc:LineExtensionAmount>
-        <cac:TaxTotal>
-            <cbc:TaxAmount currencyID="SAR">${itemTax.toFixed(2)}</cbc:TaxAmount>
-            <cbc:RoundingAmount currencyID="SAR">${itemLineTotal.toFixed(2)}</cbc:RoundingAmount>
-        </cac:TaxTotal>
-        <cac:Item>
-            <cbc:Name>${item.name}</cbc:Name>
-            <cac:ClassifiedTaxCategory>
-                <cbc:ID>S</cbc:ID>
-                <cbc:Percent>${settings.taxRate}</cbc:Percent>
-                <cac:TaxScheme>
-                    <cbc:ID>VAT</cbc:ID>
-                </cac:TaxScheme>
-            </cac:ClassifiedTaxCategory>
-        </cac:Item>
-        <cac:Price>
-            <cbc:PriceAmount currencyID="SAR">${item.price.toFixed(2)}</cbc:PriceAmount>
-        </cac:Price>
-    </cac:InvoiceLine>\n`;
-    });
-
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" 
-         xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" 
-         xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"
-         xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2">
-    <ext:UBLExtensions>
-        <ext:UBLExtension>
-            <ext:ExtensionURI>urn:oasis:names:specification:ubl:dsig:enveloped:xades</ext:ExtensionURI>
-            <ext:ExtensionContent>
-                <sig:UBLDocumentSignatures xmlns:sig="urn:oasis:names:specification:ubl:schema:xsd:CommonSignatureComponents-2" xmlns:sac="urn:oasis:names:specification:ubl:schema:xsd:SignatureAggregateComponents-2" xmlns:sbc="urn:oasis:names:specification:ubl:schema:xsd:SignatureBasicComponents-2">
-                    <!-- Signature placeholder for Phase 2 compliance -->
-                </sig:UBLDocumentSignatures>
-            </ext:ExtensionContent>
-        </ext:UBLExtension>
-    </ext:UBLExtensions>
-    <cbc:ProfileID>reporting:1.0</cbc:ProfileID>
-    <cbc:ID>${invoice.id}</cbc:ID>
-    <cbc:UUID>${invoice.uuid}</cbc:UUID>
-    <cbc:IssueDate>${datePart}</cbc:IssueDate>
-    <cbc:IssueTime>${timePart}</cbc:IssueTime>
-    <cbc:InvoiceTypeCode name="0111000">388</cbc:InvoiceTypeCode>
-    <cbc:DocumentCurrencyCode>SAR</cbc:DocumentCurrencyCode>
-    <cbc:TaxCurrencyCode>SAR</cbc:TaxCurrencyCode>
-    <cac:AdditionalDocumentReference>
-        <cbc:ID>PIH</cbc:ID>
-        <cac:Attachment>
-            <cbc:EmbeddedDocumentBinaryObject mimeCode="text/plain">${invoice.pih}</cbc:EmbeddedDocumentBinaryObject>
-        </cac:Attachment>
-    </cac:AdditionalDocumentReference>
-    <cac:AdditionalDocumentReference>
-        <cbc:ID>ICV</cbc:ID>
-        <cbc:UUID>${invoice.csn}</cbc:UUID>
-    </cac:AdditionalDocumentReference>
-    <cac:AccountingSupplierParty>
-        <cac:Party>
-            <cac:PartyIdentification>
-                <cbc:ID schemeID="CRN">1010123456</cbc:ID>
-            </cac:PartyIdentification>
-            <cac:PostalAddress>
-                <cbc:StreetName>Olaya St</cbc:StreetName>
-                <cbc:BuildingNumber>1234</cbc:BuildingNumber>
-                <cbc:CitySubdivisionName>Al-Olaya</cbc:CitySubdivisionName>
-                <cbc:CityName>Riyadh</cbc:CityName>
-                <cbc:PostalZone>12211</cbc:PostalZone>
-                <cac:Country>
-                    <cbc:IdentificationCode>SA</cbc:IdentificationCode>
-                </cac:Country>
-            </cac:PostalAddress>
-            <cac:PartyTaxScheme>
-                <cbc:CompanyID>${settings.vatNumber}</cbc:CompanyID>
-                <cac:TaxScheme>
-                    <cbc:ID>VAT</cbc:ID>
-                </cac:TaxScheme>
-            </cac:PartyTaxScheme>
-            <cac:PartyLegalEntity>
-                <cbc:RegistrationName>${settings.businessName}</cbc:RegistrationName>
-            </cac:PartyLegalEntity>
-        </cac:Party>
-    </cac:AccountingSupplierParty>
-    <cac:AccountingCustomerParty>
-        <cac:Party>
-            <cac:PartyLegalEntity>
-                <cbc:RegistrationName>${invoice.customer}</cbc:RegistrationName>
-            </cac:PartyLegalEntity>
-        </cac:Party>
-    </cac:AccountingCustomerParty>
-    <cac:TaxTotal>
-        <cbc:TaxAmount currencyID="SAR">${invoice.vat.toFixed(2)}</cbc:TaxAmount>
-    </cac:TaxTotal>
-    <cac:LegalMonetaryTotal>
-        <cbc:LineExtensionAmount currencyID="SAR">${(invoice.total - invoice.vat).toFixed(2)}</cbc:LineExtensionAmount>
-        <cbc:TaxExclusiveAmount currencyID="SAR">${(invoice.total - invoice.vat).toFixed(2)}</cbc:TaxExclusiveAmount>
-        <cbc:TaxInclusiveAmount currencyID="SAR">${invoice.total.toFixed(2)}</cbc:TaxInclusiveAmount>
-        <cbc:PayableAmount currencyID="SAR">${invoice.total.toFixed(2)}</cbc:PayableAmount>
-    </cac:LegalMonetaryTotal>
-${itemsXML}</Invoice>`;
-
-    return xml.trim();
+    return zatcaCrypto.generateZATCAXML(invoice, settings);
 }
 
-// Initialize seed invoices with ZATCA metadata
-if (mockDb.invoices.length === 0) {
-    const seed1 = { id: 'INV-1001', date: '2026-06-24 10:30', customer: 'Walk-in Customer / عميل نقدي', items: [{ id: '1001', name: 'شاشة ذكية فاخرة 27 بوصة', price: 950, qty: 1 }], total: 1092.5, vat: 142.5, discount: 0 };
-    const seed2 = { id: 'INV-1002', date: '2026-06-24 11:15', customer: 'Khalil Al-Ghamdi', items: [{ id: '1002', name: 'قارئ باركود لاسلكي ليزري', price: 250, qty: 2 }], total: 575, vat: 75, discount: 0 };
-    
-    [seed1, seed2].forEach((inv, index) => {
-        inv.uuid = crypto.randomUUID();
-        inv.csn = index + 1;
-        inv.pih = "NWZlY2Q1Y2QyODgyY2NmYTE5YTY1ODIzMDYyMzA5MTRmYmJhYmQ2YmQxMTBiYTkyYTk4YmM0ZTc0Y2Y5MmQ2ZQ==";
-        inv.xml = generateZATCAXML(inv, mockDb.settings);
-        inv.xmlHash = sha256Node(inv.xml);
-        inv.xmlHashBase64 = Buffer.from(inv.xmlHash, 'hex').toString('base64');
-        inv.signature = signHashNode(inv.xmlHash);
-        inv.publicKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEbE08C8wK7zH6r2wR3pS1a1gD4o6H4L8T1F3E2W1Q2A3B4C5D6E7F8G9H0I1J2K3L4M5N6O7P8Q9R0S1T2U3V4W5X6Y7Z==";
-        inv.certSignature = "MEQCIDz/R+x6T/T42/yvF1w67r81m4F/X27+z36/S/23s/Y1AiAC/S/z8E8r6Q81/t23/9+x7r23/X71/+1287/r+x612w==";
-        inv.zatcaStatus = 'PENDING';
-        mockDb.invoices.push(inv);
+// Enrich seed invoices with genuine ZATCA Phase 2 UBL 2.1 XML, Hash Chain, ECDSA Signature & TLV QR
+(function enrichSeedInvoices() {
+    const defaultKeys = zatcaCrypto.getKeys('default') || zatcaCrypto.onboardDevice('default', {
+        organizationNameAr: mockDb.settings.businessName,
+        organizationNameEn: mockDb.settings.businessName,
+        vatNumber: mockDb.settings.vatNumber,
+        crNumber: mockDb.settings.crNumber
+    }, 'sandbox');
+    if (!mockDb.settings.zatcaConn) {
+        mockDb.settings.zatcaConn = {
+            env: 'sandbox',
+            endpoint: 'https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal',
+            clientId: defaultKeys.certificatePem,
+            clientSecret: 'SANDBOX-CSID-SECRET-26I',
+            privateKey: defaultKeys.privateKeyPem,
+            publicKey: defaultKeys.publicKeyPem,
+            csr: defaultKeys.csrPem,
+            deviceSerial: '1-26I|2-POS|3-ed22f1d8-e6a2-1118-9b58-d9a8f11e445f',
+            status: 'CONNECTED',
+            autoSend: false
+        };
+    }
+    let prevHash = zatcaCrypto.DEFAULT_COMPLIANCE_PREVIOUS_INVOICE_HASH;
+    mockDb.invoices.forEach((inv, idx) => {
+        inv.csn = idx + 1;
+        inv.pih = prevHash;
+        const unsignedXml = zatcaCrypto.generateZATCAXML(inv, mockDb.settings);
+        const signed = zatcaCrypto.signInvoice({
+            xml: unsignedXml,
+            privateKeyPem: defaultKeys.privateKeyPem,
+            certificatePem: defaultKeys.certificatePem
+        });
+        inv.xml = signed.signedXml;
+        inv.xmlHash = signed.xmlHashHex;
+        inv.xmlHashBase64 = signed.xmlHashBase64;
+        inv.signature = signed.signatureHex;
+        inv.publicKey = signed.publicKeyBase64;
+        inv.certSignature = signed.certificateSignature;
+        inv.qrCode = signed.qrCodeBase64;
+        prevHash = signed.xmlHashBase64;
     });
-}
+})();
 
 // ----------------------------------------------------
 // API ROUTES
@@ -668,138 +583,18 @@ const defaultProductsBySector = {
         { nameEN: 'Bridal Hand Bouquet', nameAR: 'مسكة عروس ملكية', price: 450, cost: 200, stock: 8, category: 'Weddings', emoji: '💐', barcode: '628900100040' },
         { nameEN: 'Flower & Belgian Chocolate Box', nameAR: 'بوكس ورد وشوكولاتة بلجيكية', price: 290, cost: 130, stock: 20, category: 'Gift Boxes', emoji: '🎁', barcode: '628900100050' },
         { nameEN: 'Single Long Stem Rose', nameAR: 'وردة جوري مفردة مع تغليف', price: 15, cost: 5, stock: 100, category: 'Single Flowers', emoji: '🥀', barcode: '628900100060' }
+    ],
+    tailoring: [
+        { nameEN: 'Japanese Semiramis White Fabric (Per Meter)', nameAR: 'قماش سميراميس ياباني أبيض (بالمتر)', price: 45, cost: 25, stock: 120, category: 'Fabrics', emoji: '🧵', barcode: '628700100010' },
+        { nameEN: 'Japanese Cream Soft Fabric (Per Meter)', nameAR: 'قماش ياباني كريمي طايح (بالمتر)', price: 50, cost: 28, stock: 95, category: 'Fabrics', emoji: '🧶', barcode: '628700100020' },
+        { nameEN: 'English Winter Cashmere Wool (Per Meter)', nameAR: 'صوف كشمير شتوي إنجليزي (بالمتر)', price: 95, cost: 55, stock: 60, category: 'Fabrics', emoji: '🧥', barcode: '628700100030' },
+        { nameEN: 'Italian Super 130s Navy Suiting (Per Meter)', nameAR: 'قماش بدلة إيطالي كحلي فاخر (بالمتر)', price: 140, cost: 80, stock: 45, category: 'Fabrics', emoji: '🕴️', barcode: '628700100040' },
+        { nameEN: 'Korean Silk Black Abaya Crepe (Per Meter)', nameAR: 'كريب حرير كوري أسود للعبايات (بالمتر)', price: 65, cost: 35, stock: 85, category: 'Fabrics', emoji: '👘', barcode: '628700100050' },
+        { nameEN: 'Luxury Cufflinks Set (Silver/Onyx)', nameAR: 'طقم كبك رجالي فضي ملكي', price: 120, cost: 55, stock: 30, category: 'Accessories', emoji: '💎', barcode: '628700100060' }
     ]
 };
 
 // The first duplicate updateCloudflareTunnelConfig was removed
-
-// Function to generate ZATCA compliant XML
-function generateZATCAXML(invoice, settings) {
-    if (!settings) settings = { businessName: 'Unknown', vatNumber: '000000000000000' };
-    
-    let itemsXML = '';
-    if (invoice.items && Array.isArray(invoice.items)) {
-        invoice.items.forEach((item, index) => {
-            const lineTotal = item.price * item.qty;
-            itemsXML += `
-    <cac:InvoiceLine>
-        <cbc:ID>${index + 1}</cbc:ID>
-        <cbc:InvoicedQuantity unitCode="PCE">${item.qty}</cbc:InvoicedQuantity>
-        <cbc:LineExtensionAmount currencyID="SAR">${lineTotal.toFixed(2)}</cbc:LineExtensionAmount>
-        <cac:TaxTotal>
-            <cbc:TaxAmount currencyID="SAR">${(lineTotal * 0.15).toFixed(2)}</cbc:TaxAmount>
-            <cac:TaxSubtotal>
-                <cbc:TaxableAmount currencyID="SAR">${lineTotal.toFixed(2)}</cbc:TaxableAmount>
-                <cbc:TaxAmount currencyID="SAR">${(lineTotal * 0.15).toFixed(2)}</cbc:TaxAmount>
-                <cac:TaxCategory>
-                    <cbc:ID>S</cbc:ID>
-                    <cbc:Percent>15.00</cbc:Percent>
-                    <cac:TaxScheme>
-                        <cbc:ID>VAT</cbc:ID>
-                    </cac:TaxScheme>
-                </cac:TaxCategory>
-            </cac:TaxSubtotal>
-        </cac:TaxTotal>
-        <cac:Item>
-            <cbc:Name>${item.name}</cbc:Name>
-        </cac:Item>
-        <cac:Price>
-            <cbc:PriceAmount currencyID="SAR">${item.price.toFixed(2)}</cbc:PriceAmount>
-        </cac:Price>
-    </cac:InvoiceLine>`;
-        });
-    }
-
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2" xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2">
-    <ext:UBLExtensions>
-        <ext:UBLExtension>
-            <ext:ExtensionURI>urn:oasis:names:specification:ubl:dsig:enveloped:xades</ext:ExtensionURI>
-            <ext:ExtensionContent>
-                <sig:UBLDocumentSignatures xmlns:sig="urn:oasis:names:specification:ubl:schema:xsd:CommonSignatureComponents-2" xmlns:sac="urn:oasis:names:specification:ubl:schema:xsd:SignatureAggregateComponents-2" xmlns:sbc="urn:oasis:names:specification:ubl:schema:xsd:SignatureBasicComponents-2">
-                    <!-- Signature placeholder for Phase 2 compliance -->
-                </sig:UBLDocumentSignatures>
-            </ext:ExtensionContent>
-        </ext:UBLExtension>
-    </ext:UBLExtensions>
-    <cbc:ProfileID>reporting:1.0</cbc:ProfileID>
-    <cbc:ID>${invoice.id}</cbc:ID>
-    <cbc:UUID>${invoice.uuid}</cbc:UUID>
-    <cbc:IssueDate>${invoice.date.split(' ')[0]}</cbc:IssueDate>
-    <cbc:IssueTime>${invoice.date.split(' ')[1] || '00:00:00'}</cbc:IssueTime>
-    <cbc:InvoiceTypeCode name="0111010">388</cbc:InvoiceTypeCode>
-    <cbc:DocumentCurrencyCode>SAR</cbc:DocumentCurrencyCode>
-    <cbc:TaxCurrencyCode>SAR</cbc:TaxCurrencyCode>
-    <cac:AdditionalDocumentReference>
-        <cbc:ID>ICV</cbc:ID>
-        <cbc:UUID>${invoice.csn}</cbc:UUID>
-    </cac:AdditionalDocumentReference>
-    <cac:AdditionalDocumentReference>
-        <cbc:ID>PIH</cbc:ID>
-        <cac:Attachment>
-            <cbc:EmbeddedDocumentBinaryObject mimeCode="text/plain">${invoice.pih}</cbc:EmbeddedDocumentBinaryObject>
-        </cac:Attachment>
-    </cac:AdditionalDocumentReference>
-    <cac:AccountingSupplierParty>
-        <cac:Party>
-            <cac:PostalAddress>
-                <cbc:StreetName>Riyadh</cbc:StreetName>
-                <cbc:CityName>Riyadh</cbc:CityName>
-                <cac:Country>
-                    <cbc:IdentificationCode>SA</cbc:IdentificationCode>
-                </cac:Country>
-            </cac:PostalAddress>
-            <cac:PartyTaxScheme>
-                <cbc:CompanyID>${settings.vatNumber}</cbc:CompanyID>
-                <cac:TaxScheme>
-                    <cbc:ID>VAT</cbc:ID>
-                </cac:TaxScheme>
-            </cac:PartyTaxScheme>
-            <cac:PartyLegalEntity>
-                <cbc:RegistrationName>${settings.businessName}</cbc:RegistrationName>
-            </cac:PartyLegalEntity>
-        </cac:Party>
-    </cac:AccountingSupplierParty>
-    <cac:AccountingCustomerParty>
-        <cac:Party>
-            <cac:PartyLegalEntity>
-                <cbc:RegistrationName>${invoice.customer}</cbc:RegistrationName>
-            </cac:PartyLegalEntity>
-        </cac:Party>
-    </cac:AccountingCustomerParty>
-    <cac:TaxTotal>
-        <cbc:TaxAmount currencyID="SAR">${invoice.vat.toFixed(2)}</cbc:TaxAmount>
-    </cac:TaxTotal>
-    <cac:LegalMonetaryTotal>
-        <cbc:LineExtensionAmount currencyID="SAR">${(invoice.total - invoice.vat).toFixed(2)}</cbc:LineExtensionAmount>
-        <cbc:TaxExclusiveAmount currencyID="SAR">${(invoice.total - invoice.vat).toFixed(2)}</cbc:TaxExclusiveAmount>
-        <cbc:TaxInclusiveAmount currencyID="SAR">${invoice.total.toFixed(2)}</cbc:TaxInclusiveAmount>
-        <cbc:PayableAmount currencyID="SAR">${invoice.total.toFixed(2)}</cbc:PayableAmount>
-    </cac:LegalMonetaryTotal>
-${itemsXML}</Invoice>`;
-
-    return xml.trim();
-}
-
-// Initialize seed invoices with ZATCA metadata
-if (mockDb.invoices.length === 0) {
-    const seed1 = { id: 'INV-1001', date: '2026-06-24 10:30', customer: 'Walk-in Customer / عميل نقدي', items: [{ id: '1001', name: 'شاشة ذكية فاخرة 27 بوصة', price: 950, qty: 1 }], total: 1092.5, vat: 142.5, discount: 0 };
-    const seed2 = { id: 'INV-1002', date: '2026-06-24 11:15', customer: 'Khalil Al-Ghamdi', items: [{ id: '1002', name: 'قارئ باركود لاسلكي ليزري', price: 250, qty: 2 }], total: 575, vat: 75, discount: 0 };
-    
-    [seed1, seed2].forEach((inv, index) => {
-        inv.uuid = crypto.randomUUID();
-        inv.csn = index + 1;
-        inv.pih = "NWZlY2Q1Y2QyODgyY2NmYTE5YTY1ODIzMDYyMzA5MTRmYmJhYmQ2YmQxMTBiYTkyYTk4YmM0ZTc0Y2Y5MmQ2ZQ==";
-        inv.xml = generateZATCAXML(inv, mockDb.settings);
-        inv.xmlHash = sha256Node(inv.xml);
-        inv.xmlHashBase64 = Buffer.from(inv.xmlHash, 'hex').toString('base64');
-        inv.signature = signHashNode(inv.xmlHash);
-        inv.publicKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEbE08C8wK7zH6r2wR3pS1a1gD4o6H4L8T1F3E2W1Q2A3B4C5D6E7F8G9H0I1J2K3L4M5N6O7P8Q9R0S1T2U3V4W5X6Y7Z==";
-        inv.certSignature = "MEQCIDz/R+x6T/T42/yvF1w67r81m4F/X27+z36/S/23s/Y1AiAC/S/z8E8r6Q81/t23/9+x7r23/X71/+1287/r+x612w==";
-        inv.zatcaStatus = 'PENDING';
-        mockDb.invoices.push(inv);
-    });
-}
 
 // ----------------------------------------------------
 // API ROUTES
@@ -838,6 +633,14 @@ global.defaultProductsBySector = {
         { nameEN: 'Bridal Hand Bouquet', nameAR: 'مسكة عروس ملكية', price: 450, cost: 200, stock: 8, category: 'Weddings', emoji: '💐', barcode: '628900100040' },
         { nameEN: 'Flower & Belgian Chocolate Box', nameAR: 'بوكس ورد وشوكولاتة بلجيكية', price: 290, cost: 130, stock: 20, category: 'Gift Boxes', emoji: '🎁', barcode: '628900100050' },
         { nameEN: 'Single Long Stem Rose', nameAR: 'وردة جوري مفردة مع تغليف', price: 15, cost: 5, stock: 100, category: 'Single Flowers', emoji: '🥀', barcode: '628900100060' }
+    ],
+    tailoring: [
+        { nameEN: 'Japanese Semiramis White Fabric (Per Meter)', nameAR: 'قماش سميراميس ياباني أبيض (بالمتر)', price: 45, cost: 25, stock: 120, category: 'Fabrics', emoji: '🧵', barcode: '628700100010' },
+        { nameEN: 'Japanese Cream Soft Fabric (Per Meter)', nameAR: 'قماش ياباني كريمي طايح (بالمتر)', price: 50, cost: 28, stock: 95, category: 'Fabrics', emoji: '🧶', barcode: '628700100020' },
+        { nameEN: 'English Winter Cashmere Wool (Per Meter)', nameAR: 'صوف كشمير شتوي إنجليزي (بالمتر)', price: 95, cost: 55, stock: 60, category: 'Fabrics', emoji: '🧥', barcode: '628700100030' },
+        { nameEN: 'Italian Super 130s Navy Suiting (Per Meter)', nameAR: 'قماش بدلة إيطالي كحلي فاخر (بالمتر)', price: 140, cost: 80, stock: 45, category: 'Fabrics', emoji: '🕴️', barcode: '628700100040' },
+        { nameEN: 'Korean Silk Black Abaya Crepe (Per Meter)', nameAR: 'كريب حرير كوري أسود للعبايات (بالمتر)', price: 65, cost: 35, stock: 85, category: 'Fabrics', emoji: '👘', barcode: '628700100050' },
+        { nameEN: 'Luxury Cufflinks Set (Silver/Onyx)', nameAR: 'طقم كبك رجالي فضي ملكي', price: 120, cost: 55, stock: 30, category: 'Accessories', emoji: '💎', barcode: '628700100060' }
     ]
 };
 
@@ -1060,6 +863,9 @@ async function removeCloudflareTunnelConfig(tenantDomain) {
 }
 
 global.mockDb = mockDb;
+global.generateZATCAXML = generateZATCAXML;
+global.sha256Node = sha256Node;
+global.signHashNode = signHashNode;
 global.getTenantId = getTenantId;
 global.defaultProductsBySector = defaultProductsBySector;
 global.sendLicenseEmail = sendLicenseEmail;

@@ -86,7 +86,12 @@ const sidebarTranslations = {
         ecommerce: "E-Commerce",
         storefrontSettings: "Storefront Settings",
         viewStore: "View Online Store",
-        digitalAssets: "Digital Assets"
+        digitalAssets: "Digital Assets",
+        tailoring: "Tailoring & Bespoke",
+        tailoringDashboard: "Tailoring Dashboard",
+        tailoringMeasurements: "Customer Measurements",
+        tailoringOrders: "Tailoring Orders & Deposits",
+        tailoringWorkshop: "Workshop Kanban & Pay"
     },
     ar: {
         dashboard: "الرئيسية",
@@ -171,12 +176,26 @@ const sidebarTranslations = {
         ecommerce: "المتجر الإلكتروني",
         storefrontSettings: "إعدادات المتجر",
         viewStore: "عرض المتجر",
-        digitalAssets: "المنتجات الرقمية"
+        digitalAssets: "المنتجات الرقمية",
+        tailoring: "الخياطة والتفصيل",
+        tailoringDashboard: "لوحة القيادة للخياطة",
+        tailoringMeasurements: "سجل مقاسات العملاء",
+        tailoringOrders: "أوامر التفصيل والعربون",
+        tailoringWorkshop: "لوحة المشغل والعمولات"
     }
 };
 
 const menuConfig = [
     { id: 'dashboard', icon: 'ri-home-line', labelKey: 'dashboard' },
+    {
+        id: 'tailoring', icon: 'ri-scissors-cut-line', labelKey: 'tailoring',
+        submenu: [
+            { id: 'tailoring_dashboard', labelKey: 'tailoringDashboard' },
+            { id: 'tailoring_measurements', labelKey: 'tailoringMeasurements' },
+            { id: 'tailoring_orders', labelKey: 'tailoringOrders' },
+            { id: 'tailoring_workshop', labelKey: 'tailoringWorkshop' }
+        ]
+    },
     { 
         id: 'invoices', icon: 'ri-receipt-line', labelKey: 'invoices',
         submenu: [

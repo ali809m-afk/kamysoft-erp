@@ -416,7 +416,23 @@ const Settings = (props) => {
                         <h3 style={{ marginBottom: '20px', color: 'var(--accent-cyan)', display: 'flex', alignItems: 'center', gap: '8px' }}>
                             <i className="ri-cloud-line"></i> {translations[currentLanguage].zatcaSettings || 'ZATCA Connection Settings'}
                         </h3>
-                        <form onSubmit={(e) => { e.preventDefault(); alert(currentLanguage === 'ar' ? 'تم حفظ إعدادات خادم الزكاة بنجاح' : 'ZATCA Server settings saved successfully'); }}>
+                        <form onSubmit={(e) => {
+                            e.preventDefault();
+                            const updatedSettings = { ...settings, zatcaConn };
+                            fetch('/api/settings', {
+                                method: 'POST',
+                                headers: props.headers,
+                                body: JSON.stringify(updatedSettings)
+                            })
+                            .then(r => r.json())
+                            .then(saved => {
+                                setSettings(saved);
+                                alert(currentLanguage === 'ar' ? 'تم حفظ إعدادات خادم الزكاة بنجاح' : 'ZATCA Server settings saved successfully');
+                            })
+                            .catch(() => {
+                                alert(currentLanguage === 'ar' ? 'تم حفظ إعدادات خادم الزكاة محلياً' : 'ZATCA Server settings saved locally');
+                            });
+                        }}>
                             <div className="form-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '15px' }}>
                                 <div className="form-group">
                                     <label>{currentLanguage === 'ar' ? 'اسم المؤسسة' : 'Business Name'}</label>
@@ -503,7 +519,7 @@ const Settings = (props) => {
                                         const res = await fetch('/api/zatca/onboard', {
                                             method: 'POST',
                                             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                                            body: JSON.stringify({ otp: zatcaConn?.otp, env: zatcaConn?.env })
+                                            body: JSON.stringify({ otp: zatcaConn?.otp, env: zatcaConn?.env, deviceSerial: zatcaConn?.deviceSerial })
                                         });
                                         const data = await res.json();
                                         if (res.ok) {

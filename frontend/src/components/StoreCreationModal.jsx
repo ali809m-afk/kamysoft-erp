@@ -9,7 +9,8 @@ const SECTOR_LABELS = {
     'furniture': 'Furniture & Home Decor / معرض أثاث ومفروشات',
     'spareparts': 'Spare Parts / قطع غيار',
     'realestate': 'Real Estate Management / إدارة أملاك وعقارات',
-    'freshFlowers': 'Fresh Flowers & Florist / زهور طبيعية وتنسيق حفلات'
+    'freshFlowers': 'Fresh Flowers & Florist / زهور طبيعية وتنسيق حفلات',
+    'tailoring': 'Bespoke Tailoring & Workshop / خياطة وتفصيل ومشغل'
 };
 
 const StoreCreationModal = ({ isOpen, onClose, baseDomain = 'kamysoft.com', isRtl = false, onSuccess }) => {

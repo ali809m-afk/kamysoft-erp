@@ -51,6 +51,13 @@ const invoiceSchema = new mongoose.Schema({
     signature: { type: String },
     publicKey: { type: String },
     certSignature: { type: String },
+    qrCode: { type: String },
+    paymentMethod: { type: String },
+    branch: { type: String },
+    notes: { type: String },
+    originalInvoiceId: { type: String },
+    invoiceTypeCode: { type: String, default: '388' },
+    invoiceTypeCodeName: { type: String, default: '0200000' },
     customer: { type: String, required: true },
     items: [invoiceItemSchema],
     discount: { type: Number, default: 0 },
@@ -233,6 +240,20 @@ const settingsSchema = new mongoose.Schema({
     keycardConfig: {
         vendor: { type: String, default: 'mock' }, // e.g. AssaAbloy, VingCard
         endpoint: { type: String, default: 'http://localhost:5000' }
+    },
+    zatcaConn: {
+        env: { type: String, default: 'sandbox' },
+        endpoint: { type: String, default: 'https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal' },
+        clientId: { type: String, default: '' },
+        clientSecret: { type: String, default: '' },
+        privateKey: { type: String, default: '' },
+        publicKey: { type: String, default: '' },
+        csr: { type: String, default: '' },
+        deviceSerial: { type: String, default: '1-26I|2-POS|3-ed22f1d8-e6a2-1118-9b58-d9a8f11e445f' },
+        otp: { type: String, default: '' },
+        autoSend: { type: Boolean, default: false },
+        status: { type: String, default: 'DISCONNECTED' },
+        requestId: { type: String, default: '' }
     }
 });
 const Settings = mongoose.model('Settings', settingsSchema);
@@ -644,8 +665,119 @@ const flowerDeliverySchema = new mongoose.Schema({
 flowerDeliverySchema.index({ id: 1, tenantId: 1 }, { unique: true });
 const FlowerDelivery = mongoose.model('FlowerDelivery', flowerDeliverySchema);
 
+// ==========================================
+// TAILORING & BESPOKE GARMENTS MODULE SCHEMAS
+// ==========================================
+
+const measurementProfileSchema = new mongoose.Schema({
+    id: { type: String, required: true },
+    tenantId: { type: String, default: 'default', index: true },
+    customerId: { type: String, required: true, index: true },
+    customerName: { type: String, required: true },
+    customerPhone: { type: String, default: '' },
+    profileName: { type: String, required: true },
+    garmentType: { type: String, enum: ['Thobe', 'Suit', 'Shirt', 'Trouser', 'Abaya', 'Dress', 'Uniform'], default: 'Thobe' },
+    unit: { type: String, enum: ['inch', 'cm'], default: 'inch' },
+    measurements: {
+        length: { type: String, default: '' },
+        shoulder: { type: String, default: '' },
+        chest: { type: String, default: '' },
+        waist: { type: String, default: '' },
+        hips: { type: String, default: '' },
+        sleeveLength: { type: String, default: '' },
+        wrist: { type: String, default: '' },
+        neck: { type: String, default: '' },
+        armhole: { type: String, default: '' },
+        bottomWidth: { type: String, default: '' },
+        trouserLength: { type: String, default: '' },
+        inseam: { type: String, default: '' },
+        thigh: { type: String, default: '' },
+        knee: { type: String, default: '' }
+    },
+    stylePreferences: {
+        collarType: { type: String, default: 'Mandarin (قلاب صيني)' },
+        cuffType: { type: String, default: 'Plain Sleeve (سادة)' },
+        placketType: { type: String, default: 'Hidden Buttons (جبزور مخفي)' },
+        pocketStyle: { type: String, default: 'Classic Chest + 2 Side' },
+        fitType: { type: String, default: 'Regular (عادي)' },
+        stitchType: { type: String, default: 'Single Hidden (خياطة مخفية)' },
+        buttonStyle: { type: String, default: 'Standard Pearl' },
+        embroideryNotes: { type: String, default: '' }
+    },
+    postureNotes: { type: String, default: '' },
+    updatedAt: { type: Date, default: Date.now },
+    createdAt: { type: Date, default: Date.now }
+});
+measurementProfileSchema.index({ id: 1, tenantId: 1 }, { unique: true });
+const MeasurementProfile = mongoose.model('MeasurementProfile', measurementProfileSchema);
+
+const tailoringJobCardSchema = new mongoose.Schema({
+    jobCardId: { type: String, required: true },
+    garmentType: { type: String, default: 'Thobe' },
+    measurementProfileId: { type: String, default: '' },
+    profileName: { type: String, default: '' },
+    unit: { type: String, default: 'inch' },
+    measurementSnapshot: { type: Object, default: {} },
+    styleConfig: { type: Object, default: {} },
+    fabricSource: { type: String, enum: ['Shop', 'Customer'], default: 'Shop' },
+    fabricProductId: { type: String, default: '' },
+    fabricName: { type: String, default: '' },
+    fabricColor: { type: String, default: '' },
+    fabricMeters: { type: Number, default: 3.5 },
+    qty: { type: Number, default: 1 },
+    stitchingPrice: { type: Number, default: 0 },
+    fabricPrice: { type: Number, default: 0 },
+    addOnsPrice: { type: Number, default: 0 },
+    unitTotal: { type: Number, default: 0 },
+    assignedCutterId: { type: String, default: '' },
+    assignedCutterName: { type: String, default: '' },
+    cutterCommission: { type: Number, default: 15 },
+    assignedTailorId: { type: String, default: '' },
+    assignedTailorName: { type: String, default: '' },
+    tailorCommission: { type: Number, default: 35 },
+    stage: {
+        type: String,
+        enum: ['Received', 'Cutting', 'Stitching', 'Finishing', 'QC', 'TrialReady', 'ReadyForPickup', 'Delivered'],
+        default: 'Received'
+    },
+    rackNumber: { type: String, default: '' },
+    fabricDeducted: { type: Boolean, default: false },
+    notes: { type: String, default: '' }
+});
+
+const tailoringOrderSchema = new mongoose.Schema({
+    id: { type: String, required: true },
+    tenantId: { type: String, default: 'default', index: true },
+    orderDate: { type: String, required: true },
+    trialDate: { type: String, default: '' },
+    deliveryDate: { type: String, required: true },
+    priority: { type: String, enum: ['Normal', 'Express', 'VIP'], default: 'Normal' },
+    customerId: { type: String, default: '' },
+    customerName: { type: String, required: true },
+    customerPhone: { type: String, default: '' },
+    items: [tailoringJobCardSchema],
+    subtotal: { type: Number, required: true },
+    discount: { type: Number, default: 0 },
+    vat: { type: Number, required: true },
+    totalAmount: { type: Number, required: true },
+    depositPaid: { type: Number, default: 0 },
+    balanceDue: { type: Number, default: 0 },
+    paymentStatus: { type: String, enum: ['Unpaid', 'DepositPaid', 'Paid'], default: 'Unpaid' },
+    paymentMethod: { type: String, default: 'Cash' },
+    depositInvoiceId: { type: String, default: '' },
+    finalInvoiceId: { type: String, default: '' },
+    status: { type: String, enum: ['InProduction', 'Ready', 'Delivered', 'Cancelled'], default: 'InProduction' },
+    isAlteration: { type: Boolean, default: false },
+    originalOrderId: { type: String, default: '' },
+    notes: { type: String, default: '' },
+    createdAt: { type: Date, default: Date.now }
+});
+tailoringOrderSchema.index({ id: 1, tenantId: 1 }, { unique: true });
+const TailoringOrder = mongoose.model('TailoringOrder', tailoringOrderSchema);
+
 module.exports = {
     FlowerArrangement, FlowerDelivery,
+    MeasurementProfile, TailoringOrder,
     User, Product, Invoice, Quotation, Expense, Asset, Customer, Employee, Supplier, Order, Settings, Inquiry,
     Warehouse,
     InventoryTx,
