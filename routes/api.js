@@ -4985,10 +4985,624 @@ async function createTailoringZatcaInvoice({ tenantId, customerName, items, tota
     }
 }
 
+// Helper to auto-seed realistic Bespoke Tailoring sample data for a tenant when empty (or when requested)
+async function ensureTailoringSampleData(tenantId, force = false) {
+    const sampleFabrics = [
+        { id: `${tenantId}-FAB-901`, nameEN: 'Japanese Semiramis White Fabric (Per Meter)', nameAR: 'قماش سميراميس ياباني أبيض (بالمتر)', price: 45, cost: 25, stock: 120, category: 'Fabrics', emoji: '🧵', barcode: '628700100010', tenantId },
+        { id: `${tenantId}-FAB-902`, nameEN: 'Japanese Cream Soft Fabric (Per Meter)', nameAR: 'قماش ياباني كريمي طايح (بالمتر)', price: 50, cost: 28, stock: 95, category: 'Fabrics', emoji: '🧶', barcode: '628700100020', tenantId },
+        { id: `${tenantId}-FAB-903`, nameEN: 'English Winter Cashmere Wool (Per Meter)', nameAR: 'صوف كشمير شتوي إنجليزي (بالمتر)', price: 95, cost: 55, stock: 60, category: 'Fabrics', emoji: '🧥', barcode: '628700100030', tenantId },
+        { id: `${tenantId}-FAB-904`, nameEN: 'Italian Super 130s Navy Suiting (Per Meter)', nameAR: 'قماش بدلة إيطالي كحلي فاخر (بالمتر)', price: 140, cost: 80, stock: 45, category: 'Fabrics', emoji: '🕴️', barcode: '628700100040', tenantId },
+        { id: `${tenantId}-FAB-905`, nameEN: 'Korean Silk Black Abaya Crepe (Per Meter)', nameAR: 'كريب حرير كوري أسود للعبايات (بالمتر)', price: 65, cost: 35, stock: 85, category: 'Fabrics', emoji: '👘', barcode: '628700100050', tenantId }
+    ];
+
+    const sampleProfiles = [
+        {
+            id: 'MP-1001',
+            tenantId,
+            customerId: 'CUST-8001',
+            customerName: 'Khalil Al-Ghamdi / خليل الغامدي',
+            customerPhone: '0501234567',
+            profileName: 'Royal White Summer Thobe / ثوب صيفي ملكي',
+            garmentType: 'Thobe',
+            unit: 'inch',
+            measurements: { length: '59', shoulder: '18', chest: '23', waist: '22', hips: '24', sleeveLength: '25.5', wrist: '9.25', neck: '16', armhole: '10.5', bottomWidth: '28', trouserLength: '', inseam: '' },
+            stylePreferences: {
+                collarType: 'Mandarin (قلاب صيني)',
+                cuffType: 'French Cufflinks (كبك فرنسي مزدوج)',
+                placketType: 'Hidden Buttons (جبزور مخفي)',
+                pocketStyle: 'Classic Chest + 2 Side (جيب علوي + ٢ جانبي)',
+                fitType: 'Regular (عادي مريح)',
+                stitchType: 'Single Hidden (خياطة مخفية)',
+                buttonStyle: 'Mother of Pearl',
+                embroideryNotes: 'Subtle white-on-white collar stitch'
+            },
+            postureNotes: 'Right shoulder slightly lower by 0.25 in / الكتف الأيمن نازل ربع إنش'
+        },
+        {
+            id: 'MP-1002',
+            tenantId,
+            customerId: 'CUST-8001',
+            customerName: 'Khalil Al-Ghamdi (Son - Omar) / عمر خليل الغامدي',
+            customerPhone: '0501234567',
+            profileName: 'Eid Youth Thobe - Omar / ثوب العيد للابن عمر',
+            garmentType: 'Thobe',
+            unit: 'inch',
+            measurements: { length: '46', shoulder: '14.5', chest: '18', waist: '17.5', hips: '19', sleeveLength: '20', wrist: '7.5', neck: '13.5', armhole: '8.5', bottomWidth: '22', trouserLength: '', inseam: '' },
+            stylePreferences: {
+                collarType: 'Mandarin (قلاب صيني)',
+                cuffType: 'Plain Sleeve (كم سادة)',
+                placketType: 'Snap Buttons (طقطق معدن)',
+                pocketStyle: 'Classic Chest + 2 Side (جيب علوي + ٢ جانبي)',
+                fitType: 'Regular (عادي مريح)',
+                stitchType: 'Single Hidden (خياطة مخفية)',
+                buttonStyle: 'Silver Snap',
+                embroideryNotes: ''
+            },
+            postureNotes: 'Leave 1 inch hem allowance for growth / ترك هامش في الطول'
+        },
+        {
+            id: 'MP-1003',
+            tenantId,
+            customerId: 'CUST-8002',
+            customerName: 'Fahad Al-Otaibi / فهد العتيبي',
+            customerPhone: '0557654321',
+            profileName: 'Winter Cashmere Thobe / ثوب شتوي كشمير',
+            garmentType: 'Thobe',
+            unit: 'inch',
+            measurements: { length: '58', shoulder: '17.5', chest: '22.5', waist: '21.5', hips: '23.5', sleeveLength: '25', wrist: '9', neck: '15.5', armhole: '10', bottomWidth: '27.5', trouserLength: '', inseam: '' },
+            stylePreferences: {
+                collarType: 'Classic Pointed (قلاب رسمي)',
+                cuffType: 'Single Button Cuff (كبك زرار)',
+                placketType: 'Visible Buttons (جبزور ظاهر)',
+                pocketStyle: 'Slanted Chest + Coin Pocket (جيب مائل + جيب جوال)',
+                fitType: 'Regular (عادي مريح)',
+                stitchType: 'Double Edge Stitch (تدريز مزدوج)',
+                buttonStyle: 'Dark Horn Buttons',
+                embroideryNotes: ''
+            },
+            postureNotes: 'Prefers relaxed neck collar fit / يفضل وسع مريح في الرقبة'
+        },
+        {
+            id: 'MP-1004',
+            tenantId,
+            customerId: 'CUST-8003',
+            customerName: 'Sami Al-Harbi / سامي الحربي',
+            customerPhone: '0567890123',
+            profileName: 'Executive Navy 2-Piece Suit / بدلة رسمية كحلي',
+            garmentType: 'Suit',
+            unit: 'cm',
+            measurements: { length: '76', shoulder: '47', chest: '106', waist: '94', hips: '104', sleeveLength: '64', wrist: '24', neck: '41', armhole: '48', bottomWidth: '', trouserLength: '105', inseam: '81' },
+            stylePreferences: {
+                collarType: 'Classic Pointed (قلاب رسمي)',
+                cuffType: 'French Cufflinks (كبك فرنسي مزدوج)',
+                placketType: 'Visible Buttons (جبزور ظاهر)',
+                pocketStyle: 'Slanted Chest + Coin Pocket (جيب مائل + جيب جوال)',
+                fitType: 'Slim Fit (مخصر)',
+                stitchType: 'Hand Pick Stitch (غرزة يدوية)',
+                buttonStyle: 'Italian Corozo',
+                embroideryNotes: 'Inner jacket monogram: S.H.'
+            },
+            postureNotes: 'Athletic chest, tapered waist / صدر عريض وخصر مخصر'
+        },
+        {
+            id: 'MP-1005',
+            tenantId,
+            customerId: 'CUST-8004',
+            customerName: 'Aisha Al-Subaie / عائشة السبيعي',
+            customerPhone: '0543210987',
+            profileName: 'Luxury Silk Embroidered Abaya / عباءة حرير مطرزة',
+            garmentType: 'Abaya',
+            unit: 'inch',
+            measurements: { length: '56', shoulder: '16', chest: '22', waist: '21', hips: '24', sleeveLength: '23.5', wrist: '8.5', neck: '15', armhole: '9.5', bottomWidth: '32', trouserLength: '', inseam: '' },
+            stylePreferences: {
+                collarType: 'Collarless / Open (سادة بدون قلاب)',
+                cuffType: 'Embroidered Cuff (كم مطرز)',
+                placketType: 'Hidden Buttons (جبزور مخفي)',
+                pocketStyle: 'Hidden Side Pockets Only (جيوب جانبية مخفية فقط)',
+                fitType: 'Loose / Comfort (واسع تقليدي)',
+                stitchType: 'Single Hidden (خياطة مخفية)',
+                buttonStyle: 'Hidden Snaps',
+                embroideryNotes: 'Gold leaf thread embroidery on cuffs and Tarha edge / تطريز ذهبي على الأكمام والطرحة'
+            },
+            postureNotes: 'Include matching Shayla (2m x 0.75m) / شامل طرحة مطابقة'
+        },
+        {
+            id: 'MP-1006',
+            tenantId,
+            customerId: 'CUST-8007',
+            customerName: 'Majed Al-Anazi / ماجد العنزي',
+            customerPhone: '0590123456',
+            profileName: 'Slim Fit Formal Dress Shirt / قميص رسمي مخصر',
+            garmentType: 'Shirt',
+            unit: 'cm',
+            measurements: { length: '74', shoulder: '45', chest: '102', waist: '90', hips: '100', sleeveLength: '63', wrist: '22', neck: '40', armhole: '46', bottomWidth: '', trouserLength: '', inseam: '' },
+            stylePreferences: {
+                collarType: 'Classic Pointed (قلاب رسمي)',
+                cuffType: 'French Cufflinks (كبك فرنسي مزدوج)',
+                placketType: 'Hidden Buttons (جبزور مخفي)',
+                pocketStyle: 'Hidden Side Pockets Only (جيوب جانبية مخفية فقط)',
+                fitType: 'Slim Fit (مخصر)',
+                stitchType: 'Single Hidden (خياطة مخفية)',
+                buttonStyle: 'Pearl White',
+                embroideryNotes: 'Monogram M.A on left cuff'
+            },
+            postureNotes: 'Erect posture, medium collar stiffness / حشوة ياقة متوسطة'
+        }
+    ];
+
+    const sampleOrders = [
+        {
+            id: 'TLR-9001',
+            tenantId,
+            orderDate: '2026-10-25',
+            trialDate: '2026-10-29',
+            deliveryDate: '2026-11-02',
+            priority: 'VIP',
+            customerId: 'CUST-8001',
+            customerName: 'Khalil Al-Ghamdi / خليل الغامدي',
+            customerPhone: '0501234567',
+            items: [
+                {
+                    jobCardId: 'JC-9001-1',
+                    garmentType: 'Thobe',
+                    measurementProfileId: 'MP-1001',
+                    profileName: 'Royal White Summer Thobe / ثوب صيفي ملكي',
+                    unit: 'inch',
+                    measurementSnapshot: sampleProfiles[0].measurements,
+                    styleConfig: sampleProfiles[0].stylePreferences,
+                    fabricSource: 'Shop',
+                    fabricProductId: `${tenantId}-FAB-901`,
+                    fabricName: 'Japanese Semiramis White Fabric (Per Meter) / قماش سميراميس ياباني أبيض',
+                    fabricColor: 'Pure White / أبيض ناصع',
+                    fabricMeters: 3.5,
+                    qty: 2,
+                    stitchingPrice: 130,
+                    fabricPrice: 157.5,
+                    addOnsPrice: 20,
+                    unitTotal: 307.5,
+                    assignedCutterId: 'EMP-3002',
+                    assignedCutterName: 'Ahmad Ali / أحمد علي',
+                    cutterCommission: 20,
+                    assignedTailorId: 'EMP-3004',
+                    assignedTailorName: 'Sultan Salem / سلطان سالم',
+                    tailorCommission: 40,
+                    stage: 'ReadyForPickup',
+                    rackNumber: 'Rack A-04',
+                    fabricDeducted: true,
+                    notes: 'VIP packaging on wooden hanger'
+                },
+                {
+                    jobCardId: 'JC-9001-2',
+                    garmentType: 'Thobe',
+                    measurementProfileId: 'MP-1002',
+                    profileName: 'Eid Youth Thobe - Omar / ثوب العيد للابن عمر',
+                    unit: 'inch',
+                    measurementSnapshot: sampleProfiles[1].measurements,
+                    styleConfig: sampleProfiles[1].stylePreferences,
+                    fabricSource: 'Shop',
+                    fabricProductId: `${tenantId}-FAB-902`,
+                    fabricName: 'Japanese Cream Soft Fabric (Per Meter) / قماش ياباني كريمي طايح',
+                    fabricColor: 'Soft Cream / كريمي',
+                    fabricMeters: 2.5,
+                    qty: 1,
+                    stitchingPrice: 90,
+                    fabricPrice: 125,
+                    addOnsPrice: 0,
+                    unitTotal: 215,
+                    assignedCutterId: 'EMP-3002',
+                    assignedCutterName: 'Ahmad Ali / أحمد علي',
+                    cutterCommission: 15,
+                    assignedTailorId: 'EMP-3004',
+                    assignedTailorName: 'Sultan Salem / سلطان سالم',
+                    tailorCommission: 30,
+                    stage: 'Stitching',
+                    rackNumber: '',
+                    fabricDeducted: true,
+                    notes: 'Youth thobe'
+                }
+            ],
+            subtotal: 830,
+            discount: 10,
+            vat: 123,
+            totalAmount: 943.00,
+            depositPaid: 500.00,
+            balanceDue: 443.00,
+            paymentStatus: 'DepositPaid',
+            paymentMethod: 'Card',
+            status: 'InProduction',
+            notes: 'Call customer once child thobe finishes stitching'
+        },
+        {
+            id: 'TLR-9002',
+            tenantId,
+            orderDate: '2026-10-28',
+            trialDate: '',
+            deliveryDate: '2026-11-01',
+            priority: 'Express',
+            customerId: 'CUST-8002',
+            customerName: 'Fahad Al-Otaibi / فهد العتيبي',
+            customerPhone: '0557654321',
+            items: [
+                {
+                    jobCardId: 'JC-9002-1',
+                    garmentType: 'Thobe',
+                    measurementProfileId: 'MP-1003',
+                    profileName: 'Winter Cashmere Thobe / ثوب شتوي كشمير',
+                    unit: 'inch',
+                    measurementSnapshot: sampleProfiles[2].measurements,
+                    styleConfig: sampleProfiles[2].stylePreferences,
+                    fabricSource: 'Shop',
+                    fabricProductId: `${tenantId}-FAB-903`,
+                    fabricName: 'English Winter Cashmere Wool (Per Meter) / صوف كشمير شتوي إنجليزي',
+                    fabricColor: 'Charcoal Grey / رصاصي غامق',
+                    fabricMeters: 3.5,
+                    qty: 1,
+                    stitchingPrice: 145,
+                    fabricPrice: 332.5,
+                    addOnsPrice: 0,
+                    unitTotal: 477.5,
+                    assignedCutterId: 'EMP-3006',
+                    assignedCutterName: 'Mansour Ali / منصور علي',
+                    cutterCommission: 20,
+                    assignedTailorId: 'EMP-3008',
+                    assignedTailorName: 'Turki Khalid / تركي خالد',
+                    tailorCommission: 45,
+                    stage: 'Cutting',
+                    rackNumber: '',
+                    fabricDeducted: true,
+                    notes: 'Express 48h winter wool order'
+                }
+            ],
+            subtotal: 477.5,
+            discount: 0,
+            vat: 71.63,
+            totalAmount: 549.13,
+            depositPaid: 250.00,
+            balanceDue: 299.13,
+            paymentStatus: 'DepositPaid',
+            paymentMethod: 'Cash',
+            status: 'InProduction'
+        },
+        {
+            id: 'TLR-9003',
+            tenantId,
+            orderDate: '2026-10-22',
+            trialDate: '2026-10-31',
+            deliveryDate: '2026-11-04',
+            priority: 'VIP',
+            customerId: 'CUST-8003',
+            customerName: 'Sami Al-Harbi / سامي الحربي',
+            customerPhone: '0567890123',
+            items: [
+                {
+                    jobCardId: 'JC-9003-1',
+                    garmentType: 'Suit',
+                    measurementProfileId: 'MP-1004',
+                    profileName: 'Executive Navy 2-Piece Suit / بدلة رسمية كحلي',
+                    unit: 'cm',
+                    measurementSnapshot: sampleProfiles[3].measurements,
+                    styleConfig: sampleProfiles[3].stylePreferences,
+                    fabricSource: 'Shop',
+                    fabricProductId: `${tenantId}-FAB-904`,
+                    fabricName: 'Italian Super 130s Navy Suiting (Per Meter) / قماش بدلة إيطالي كحلي',
+                    fabricColor: 'Midnight Navy / كحلي ملكي',
+                    fabricMeters: 3.25,
+                    qty: 1,
+                    stitchingPrice: 450,
+                    fabricPrice: 455,
+                    addOnsPrice: 50,
+                    unitTotal: 955,
+                    assignedCutterId: 'EMP-3002',
+                    assignedCutterName: 'Ahmad Ali / أحمد علي',
+                    cutterCommission: 45,
+                    assignedTailorId: 'EMP-3004',
+                    assignedTailorName: 'Sultan Salem / سلطان سالم',
+                    tailorCommission: 110,
+                    stage: 'TrialReady',
+                    rackNumber: 'Fitting Room #1',
+                    fabricDeducted: true,
+                    notes: 'First basted fitting ready for customer trial'
+                }
+            ],
+            subtotal: 955,
+            discount: 0,
+            vat: 143.25,
+            totalAmount: 1098.25,
+            depositPaid: 600.00,
+            balanceDue: 498.25,
+            paymentStatus: 'DepositPaid',
+            paymentMethod: 'Card',
+            status: 'InProduction'
+        },
+        {
+            id: 'TLR-9004',
+            tenantId,
+            orderDate: '2026-10-26',
+            trialDate: '',
+            deliveryDate: '2026-11-03',
+            priority: 'Normal',
+            customerId: 'CUST-8004',
+            customerName: 'Aisha Al-Subaie / عائشة السبيعي',
+            customerPhone: '0543210987',
+            items: [
+                {
+                    jobCardId: 'JC-9004-1',
+                    garmentType: 'Abaya',
+                    measurementProfileId: 'MP-1005',
+                    profileName: 'Luxury Silk Embroidered Abaya / عباءة حرير مطرزة',
+                    unit: 'inch',
+                    measurementSnapshot: sampleProfiles[4].measurements,
+                    styleConfig: sampleProfiles[4].stylePreferences,
+                    fabricSource: 'Shop',
+                    fabricProductId: `${tenantId}-FAB-905`,
+                    fabricName: 'Korean Silk Black Abaya Crepe (Per Meter) / كريب حرير كوري أسود',
+                    fabricColor: 'Jet Black / أسود فاحم',
+                    fabricMeters: 3.5,
+                    qty: 1,
+                    stitchingPrice: 160,
+                    fabricPrice: 227.5,
+                    addOnsPrice: 80,
+                    unitTotal: 467.5,
+                    assignedCutterId: 'EMP-3006',
+                    assignedCutterName: 'Mansour Ali / منصور علي',
+                    cutterCommission: 20,
+                    assignedTailorId: 'EMP-3005',
+                    assignedTailorName: 'Layla Ahmad / ليلى أحمد',
+                    tailorCommission: 55,
+                    stage: 'Finishing',
+                    rackNumber: '',
+                    fabricDeducted: true,
+                    notes: 'Gold cuff embroidery in finishing & steam pressing'
+                },
+                {
+                    jobCardId: 'JC-9004-2',
+                    garmentType: 'Abaya',
+                    measurementProfileId: 'MP-1005',
+                    profileName: 'Luxury Silk Embroidered Abaya / عباءة حرير مطرزة',
+                    unit: 'inch',
+                    measurementSnapshot: sampleProfiles[4].measurements,
+                    styleConfig: sampleProfiles[4].stylePreferences,
+                    fabricSource: 'Customer',
+                    fabricProductId: '',
+                    fabricName: "Customer's Own French Chiffon / قماش شيفون فرنسي خارجي من العميلة",
+                    fabricColor: 'Emerald Black / أسود زمردي',
+                    fabricMeters: 3.5,
+                    qty: 1,
+                    stitchingPrice: 150,
+                    fabricPrice: 0,
+                    addOnsPrice: 0,
+                    unitTotal: 150,
+                    assignedCutterId: 'EMP-3006',
+                    assignedCutterName: 'Mansour Ali / منصور علي',
+                    cutterCommission: 18,
+                    assignedTailorId: 'EMP-3005',
+                    assignedTailorName: 'Layla Ahmad / ليلى أحمد',
+                    tailorCommission: 45,
+                    stage: 'QC',
+                    rackNumber: 'QC Station #2',
+                    fabricDeducted: false,
+                    notes: 'Final quality inspection'
+                }
+            ],
+            subtotal: 617.5,
+            discount: 0,
+            vat: 92.63,
+            totalAmount: 710.13,
+            depositPaid: 350.00,
+            balanceDue: 360.13,
+            paymentStatus: 'DepositPaid',
+            paymentMethod: 'Bank Transfer',
+            status: 'InProduction'
+        },
+        {
+            id: 'TLR-9005',
+            tenantId,
+            orderDate: '2026-10-24',
+            trialDate: '',
+            deliveryDate: '2026-10-31',
+            priority: 'Normal',
+            customerId: 'CUST-8007',
+            customerName: 'Majed Al-Anazi / ماجد العنزي',
+            customerPhone: '0590123456',
+            items: [
+                {
+                    jobCardId: 'JC-9005-1',
+                    garmentType: 'Shirt',
+                    measurementProfileId: 'MP-1006',
+                    profileName: 'Slim Fit Formal Dress Shirt / قميص رسمي مخصر',
+                    unit: 'cm',
+                    measurementSnapshot: sampleProfiles[5].measurements,
+                    styleConfig: sampleProfiles[5].stylePreferences,
+                    fabricSource: 'Shop',
+                    fabricProductId: `${tenantId}-FAB-901`,
+                    fabricName: 'Japanese Semiramis White Fabric (Per Meter) / قماش سميراميس ياباني أبيض',
+                    fabricColor: 'Crisp White / أبيض',
+                    fabricMeters: 2.25,
+                    qty: 2,
+                    stitchingPrice: 85,
+                    fabricPrice: 101.25,
+                    addOnsPrice: 15,
+                    unitTotal: 201.25,
+                    assignedCutterId: 'EMP-3002',
+                    assignedCutterName: 'Ahmad Ali / أحمد علي',
+                    cutterCommission: 12,
+                    assignedTailorId: 'EMP-3008',
+                    assignedTailorName: 'Turki Khalid / تركي خالد',
+                    tailorCommission: 28,
+                    stage: 'ReadyForPickup',
+                    rackNumber: 'Rack B-11',
+                    fabricDeducted: true,
+                    notes: 'Ready on Rack B-11, customer notified via SMS'
+                }
+            ],
+            subtotal: 402.5,
+            discount: 0,
+            vat: 60.38,
+            totalAmount: 462.88,
+            depositPaid: 200.00,
+            balanceDue: 262.88,
+            paymentStatus: 'DepositPaid',
+            paymentMethod: 'Cash',
+            status: 'Ready'
+        },
+        {
+            id: 'TLR-9006',
+            tenantId,
+            orderDate: '2026-10-18',
+            trialDate: '',
+            deliveryDate: '2026-10-25',
+            priority: 'Normal',
+            customerId: 'CUST-8009',
+            customerName: 'Bandar Al-Shahrani / بندر الشهراني',
+            customerPhone: '0554321098',
+            items: [
+                {
+                    jobCardId: 'JC-9006-1',
+                    garmentType: 'Thobe',
+                    measurementProfileId: 'MP-1001',
+                    profileName: 'Classic Saudi Thobe / ثوب سعودي كلاسيك',
+                    unit: 'inch',
+                    measurementSnapshot: sampleProfiles[0].measurements,
+                    styleConfig: sampleProfiles[0].stylePreferences,
+                    fabricSource: 'Shop',
+                    fabricProductId: `${tenantId}-FAB-902`,
+                    fabricName: 'Japanese Cream Soft Fabric (Per Meter) / قماش ياباني كريمي طايح',
+                    fabricColor: 'Cream / كريمي',
+                    fabricMeters: 3.5,
+                    qty: 2,
+                    stitchingPrice: 120,
+                    fabricPrice: 175,
+                    addOnsPrice: 0,
+                    unitTotal: 295,
+                    assignedCutterId: 'EMP-3002',
+                    assignedCutterName: 'Ahmad Ali / أحمد علي',
+                    cutterCommission: 15,
+                    assignedTailorId: 'EMP-3004',
+                    assignedTailorName: 'Sultan Salem / سلطان سالم',
+                    tailorCommission: 35,
+                    stage: 'Delivered',
+                    rackNumber: 'Delivered',
+                    fabricDeducted: true,
+                    notes: 'Delivered and settled in full'
+                }
+            ],
+            subtotal: 590,
+            discount: 35,
+            vat: 83.25,
+            totalAmount: 638.25,
+            depositPaid: 638.25,
+            balanceDue: 0,
+            paymentStatus: 'Paid',
+            paymentMethod: 'Card',
+            status: 'Delivered'
+        },
+        {
+            id: 'TLR-9007',
+            tenantId,
+            orderDate: '2026-10-30',
+            trialDate: '',
+            deliveryDate: '2026-11-06',
+            priority: 'Normal',
+            customerId: 'CUST-8005',
+            customerName: 'Yousef Al-Mutairi / يوسف المطيري',
+            customerPhone: '0534567890',
+            items: [
+                {
+                    jobCardId: 'JC-9007-1',
+                    garmentType: 'Thobe',
+                    measurementProfileId: 'MP-1003',
+                    profileName: 'Customer Swiss Cotton Thobe / ثوب قطن سويسري',
+                    unit: 'inch',
+                    measurementSnapshot: sampleProfiles[2].measurements,
+                    styleConfig: sampleProfiles[2].stylePreferences,
+                    fabricSource: 'Customer',
+                    fabricProductId: '',
+                    fabricName: "Customer's Own Swiss Cotton / قماش قطن سويسري خارجي من العميل",
+                    fabricColor: 'Off-White / سكري',
+                    fabricMeters: 3.5,
+                    qty: 1,
+                    stitchingPrice: 140,
+                    fabricPrice: 0,
+                    addOnsPrice: 0,
+                    unitTotal: 140,
+                    assignedCutterId: 'EMP-3006',
+                    assignedCutterName: 'Mansour Ali / منصور علي',
+                    cutterCommission: 15,
+                    assignedTailorId: 'EMP-3008',
+                    assignedTailorName: 'Turki Khalid / تركي خالد',
+                    tailorCommission: 35,
+                    stage: 'Received',
+                    rackNumber: '',
+                    fabricDeducted: false,
+                    notes: 'Newly received order queued for cutting'
+                }
+            ],
+            subtotal: 140,
+            discount: 0,
+            vat: 21.00,
+            totalAmount: 161.00,
+            depositPaid: 80.00,
+            balanceDue: 81.00,
+            paymentStatus: 'DepositPaid',
+            paymentMethod: 'Cash',
+            status: 'InProduction'
+        }
+    ];
+
+    if (global.isMongoConnected) {
+        for (const fab of sampleFabrics) {
+            const exists = await Product.findOne({ id: fab.id, tenantId });
+            if (!exists) await Product.create(fab);
+        }
+        const profCount = await MeasurementProfile.countDocuments({ tenantId });
+        if (profCount === 0 || force) {
+            for (const p of sampleProfiles) {
+                await MeasurementProfile.findOneAndUpdate({ id: p.id, tenantId }, { $set: p }, { upsert: true });
+            }
+        }
+        const ordCount = await TailoringOrder.countDocuments({ tenantId });
+        if (ordCount === 0 || force) {
+            for (const o of sampleOrders) {
+                await TailoringOrder.findOneAndUpdate({ id: o.id, tenantId }, { $set: o }, { upsert: true });
+            }
+        }
+    } else {
+        mockDb.products = mockDb.products || [];
+        sampleFabrics.forEach(fab => {
+            if (!mockDb.products.some(p => p.id === fab.id && p.tenantId === tenantId)) {
+                mockDb.products.push(fab);
+            }
+        });
+        mockDb.measurementProfiles = mockDb.measurementProfiles || [];
+        const hasProfs = mockDb.measurementProfiles.some(m => m.tenantId === tenantId);
+        if (!hasProfs || force) {
+            mockDb.measurementProfiles = mockDb.measurementProfiles.filter(m => !(m.tenantId === tenantId && sampleProfiles.some(sp => sp.id === m.id)));
+            mockDb.measurementProfiles.push(...sampleProfiles);
+        }
+        mockDb.tailoringOrders = mockDb.tailoringOrders || [];
+        const hasOrds = mockDb.tailoringOrders.some(o => o.tenantId === tenantId);
+        if (!hasOrds || force) {
+            mockDb.tailoringOrders = mockDb.tailoringOrders.filter(o => !(o.tenantId === tenantId && sampleOrders.some(so => so.id === o.id)));
+            mockDb.tailoringOrders.push(...sampleOrders);
+        }
+    }
+}
+
+router.post('/api/tailoring/seed', authenticateToken, async (req, res) => {
+    try {
+        const tenantId = getTenantId(req);
+        await ensureTailoringSampleData(tenantId, true);
+        res.json({ success: true, message: 'Sample tailoring data seeded successfully' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // 1. Measurement Profiles CRUD
 router.get('/api/tailoring/measurements', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
+        await ensureTailoringSampleData(tenantId, false);
         const { customerId } = req.query;
         const filter = { tenantId };
         if (customerId) filter.customerId = customerId;
@@ -5072,6 +5686,7 @@ router.delete('/api/tailoring/measurements/:id', authenticateToken, async (req, 
 router.get('/api/tailoring/orders', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
+        await ensureTailoringSampleData(tenantId, false);
         if (global.isMongoConnected) {
             const orders = await TailoringOrder.find({ tenantId }).sort({ createdAt: -1 });
             res.json(orders);

@@ -31,6 +31,21 @@ const TailoringDashboard = ({ settings, currentLanguage, setActiveTab, formatCur
         fetchDashboardData();
     }, []);
 
+    const handleSeedSampleData = async () => {
+        try {
+            const token = localStorage.getItem('token');
+            const res = await fetch('/api/tailoring/seed', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                fetchDashboardData();
+            }
+        } catch (err) {
+            console.error('Failed to seed sample tailoring data:', err);
+        }
+    };
+
     const allJobCards = orders.flatMap(o => (o.items || []).map(jc => ({ ...jc, orderId: o.id, customerName: o.customerName, customerPhone: o.customerPhone, deliveryDate: o.deliveryDate, priority: o.priority })));
     const activeJobCards = allJobCards.filter(jc => jc.stage !== 'Delivered');
     const readyForPickup = allJobCards.filter(jc => jc.stage === 'ReadyForPickup');
@@ -78,6 +93,9 @@ const TailoringDashboard = ({ settings, currentLanguage, setActiveTab, formatCur
                     </button>
                     <button className="btn btn-secondary" onClick={() => setActiveTab && setActiveTab('tailoring_workshop')}>
                         <i className="ri-kanban-view"></i> {isAr ? 'لوحة المشغل والإنتاج' : 'Workshop Kanban'}
+                    </button>
+                    <button className="btn btn-secondary" onClick={handleSeedSampleData} title={isAr ? 'إعادة تحميل البيانات التجريبية' : 'Load / Reset Sample Data'}>
+                        <i className="ri-database-2-line"></i> {isAr ? 'تحميل بيانات تجريبية' : 'Load Sample Data'}
                     </button>
                 </div>
             </div>
