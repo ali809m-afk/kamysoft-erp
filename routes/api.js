@@ -42,9 +42,9 @@ const storage = multer.memoryStorage();
 const upload = multer({ storage: storage, limits: { fileSize: 100 * 1024 * 1024 } }); // 100MB max
 
 // Mock in-memory DB fallback for serverless environments (if MongoDB is disconnected)
-const mockDb = {
+const defaultMockDb = {
     users: [], products: [], invoices: [], quotations: [], expenses: [], assets: [],
-    customers: [], employees: [], suppliers: [], orders: [], settings: [],
+    customers: [], employees: [], suppliers: [], orders: [], settings: {},
     warehouses: [], inventoryTxs: [], journalEntries: [], vouchers: [],
     salaries: [], purchaseInvoices: [], returnInvoices: [], accounts: [],
     subscriptionPayments: [], properties: [], units: [], bookings: [],
@@ -53,6 +53,10 @@ const mockDb = {
     propertyOwners: [], leads: [],
     measurementProfiles: [], tailoringOrders: []
 };
+const mockDb = global.mockDb || defaultMockDb;
+Object.keys(defaultMockDb).forEach(key => {
+    if (mockDb[key] === undefined) mockDb[key] = defaultMockDb[key];
+});
 
 // Middleware from server.js for auth
 const authenticateToken = (req, res, next) => {
