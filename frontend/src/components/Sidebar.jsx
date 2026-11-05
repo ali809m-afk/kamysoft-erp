@@ -91,7 +91,8 @@ const sidebarTranslations = {
         tailoringDashboard: "Tailoring Dashboard",
         tailoringMeasurements: "Customer Measurements",
         tailoringOrders: "Tailoring Orders & Deposits",
-        tailoringWorkshop: "Workshop Kanban & Pay"
+        tailoringWorkshop: "Workshop Kanban & Pay",
+        tailoringPortal: "Client Web Portal (Atelier)"
     },
     ar: {
         dashboard: "الرئيسية",
@@ -181,7 +182,8 @@ const sidebarTranslations = {
         tailoringDashboard: "لوحة القيادة للخياطة",
         tailoringMeasurements: "سجل مقاسات العملاء",
         tailoringOrders: "أوامر التفصيل والعربون",
-        tailoringWorkshop: "لوحة المشغل والعمولات"
+        tailoringWorkshop: "لوحة المشغل والعمولات",
+        tailoringPortal: "بوابة العميل (موقع المشغل)"
     }
 };
 
@@ -193,7 +195,8 @@ const menuConfig = [
             { id: 'tailoring_dashboard', labelKey: 'tailoringDashboard' },
             { id: 'tailoring_measurements', labelKey: 'tailoringMeasurements' },
             { id: 'tailoring_orders', labelKey: 'tailoringOrders' },
-            { id: 'tailoring_workshop', labelKey: 'tailoringWorkshop' }
+            { id: 'tailoring_workshop', labelKey: 'tailoringWorkshop' },
+            { id: 'tailoring_portal', labelKey: 'tailoringPortal' }
         ]
     },
     { 
@@ -348,7 +351,11 @@ const Sidebar = ({ handleLogout, settings, mobileMenuOpen, setMobileMenuOpen, cu
 
     const handleSubMenuClick = (subMenuItemId) => {
         if (subMenuItemId === 'viewStore') {
-            window.open('/store', '_blank');
+            window.open('/store' + window.location.search, '_blank');
+            return;
+        }
+        if (subMenuItemId === 'tailoring_portal') {
+            window.open('/tailoring-portal' + window.location.search, '_blank');
             return;
         }
         setActiveTab(subMenuItemId);

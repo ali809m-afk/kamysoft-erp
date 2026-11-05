@@ -272,10 +272,25 @@ router.post('/api/auth/register-tenant', async (req, res) => {
         }
 
         // 1. Create Tenant-Specific Settings
+        const defaultEnabledModules = {
+            invoices: true,
+            pos: true,
+            inventory: true,
+            customers: true,
+            suppliers: true,
+            reports: true,
+            settings: true,
+            tailoring: businessType === 'tailoring',
+            propertyManagement: businessType === 'realestate',
+            freshFlowers: businessType === 'freshFlowers',
+            maintenance: businessType === 'services' || businessType === 'appliances',
+            ecommerce: ['retail', 'apparel', 'appliances', 'furniture', 'freshFlowers'].includes(businessType)
+        };
         const settingsData = {
             tenantId: normalizedTenantId,
             businessName: businessName,
             businessType: businessType,
+            enabledModules: defaultEnabledModules,
             vatNumber: vatNumber || '310' + Math.floor(100000000000 + Math.random() * 900000000000).toString(),
             taxRate: 15,
             baseCurrency: 'SAR',
@@ -5975,6 +5990,181 @@ router.get('/api/tailoring/commissions', authenticateToken, async (req, res) => 
         });
 
         res.json(Object.values(map));
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// 4. Public Tailoring Portal Endpoints (Fabrics, Order Tracking, Fitting & Bespoke Request)
+router.get('/api/public/tailoring/fabrics', async (req, res) => {
+    try {
+        const tenantId = req.headers['x-tenant-id'] || getTenantId(req) || 'default';
+        await ensureTailoringSampleData(tenantId, false);
+        let products = [];
+        if (global.isMongoConnected) {
+            products = await Product.find({ tenantId });
+        } else {
+            products = (mockDb.products || []).filter(p => p.tenantId === tenantId);
+        }
+        const fabrics = products.filter(p =>
+            p.category === 'Fabrics' || p.category === 'Accessories' || p.category === 'apparel' || String(p.id || '').includes('FAB')
+        );
+        res.json(fabrics.length > 0 ? fabrics : products);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+router.get('/api/public/tailoring/track', async (req, res) => {
+    try {
+        const tenantId = req.headers['x-tenant-id'] || getTenantId(req) || 'default';
+        await ensureTailoringSampleData(tenantId, false);
+        const q = String(req.query.q || '').trim().toLowerCase();
+        if (!q) return res.status(400).json({ error: 'Order ID or phone number is required' });
+
+        let orders = [];
+        if (global.isMongoConnected) {
+            orders = await TailoringOrder.find({ tenantId }).sort({ createdAt: -1 });
+        } else {
+            orders = (mockDb.tailoringOrders || []).filter(o => o.tenantId === tenantId);
+        }
+
+        const matched = orders.filter(o =>
+            String(o.id || '').toLowerCase() === q ||
+            String(o.id || '').toLowerCase().includes(q) ||
+            String(o.customerPhone || '').replace(/\s+/g, '').includes(q.replace(/\s+/g, ''))
+        );
+
+        res.json(matched.map(o => ({
+            id: o.id,
+            customerName: o.customerName,
+            orderDate: o.orderDate,
+            deliveryDate: o.deliveryDate,
+            trialDate: o.trialDate,
+            status: o.status,
+            priority: o.priority,
+            totalAmount: o.totalAmount,
+            depositPaid: o.depositPaid,
+            balanceDue: o.balanceDue,
+            paymentStatus: o.paymentStatus,
+            items: (o.items || []).map(jc => ({
+                jobCardId: jc.jobCardId,
+                garmentType: jc.garmentType,
+                profileName: jc.profileName,
+                fabricName: jc.fabricName,
+                stage: jc.stage,
+                rackNumber: jc.rackNumber,
+                qty: jc.qty
+            }))
+        })));
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+router.post('/api/public/tailoring/booking', async (req, res) => {
+    try {
+        const tenantId = req.headers['x-tenant-id'] || getTenantId(req) || 'default';
+        const {
+            customerName,
+            customerPhone,
+            garmentType = 'Thobe',
+            fabricProductId = '',
+            fabricName = '',
+            preferredDate = '',
+            collarType = 'Mandarin (قلاب صيني)',
+            cuffType = 'Plain Sleeve (كم سادة)',
+            fitType = 'Regular (عادي مريح)',
+            notes = '',
+            measurements = {}
+        } = req.body;
+
+        if (!customerName || !customerPhone) {
+            return res.status(400).json({ error: 'Name and phone number are required' });
+        }
+
+        const shortCode = Date.now().toString().slice(-5);
+        const orderId = `WEB-TLR-${shortCode}`;
+        const profileId = `WEB-MP-${shortCode}`;
+
+        const hasMeasurements = Object.values(measurements || {}).some(v => v && String(v).trim() !== '');
+        if (hasMeasurements) {
+            const profilePayload = {
+                id: profileId,
+                tenantId,
+                customerId: `WEB-CUST-${shortCode}`,
+                customerName,
+                customerPhone,
+                profileName: `${garmentType} - Web Portal (${customerName})`,
+                garmentType,
+                unit: 'inch',
+                measurements,
+                stylePreferences: {
+                    collarType,
+                    cuffType,
+                    placketType: 'Hidden Buttons (جبزور مخفي)',
+                    pocketStyle: 'Classic Chest + 2 Side (جيب علوي + ٢ جانبي)',
+                    fitType,
+                    stitchType: 'Single Hidden (خياطة مخفية)'
+                },
+                postureNotes: notes,
+                createdAt: new Date(),
+                updatedAt: new Date()
+            };
+            if (global.isMongoConnected) {
+                await MeasurementProfile.create(profilePayload);
+            } else {
+                mockDb.measurementProfiles = mockDb.measurementProfiles || [];
+                mockDb.measurementProfiles.unshift(profilePayload);
+            }
+        }
+
+        const baseStitchingPrice = garmentType === 'Bisht' ? 600 : garmentType === 'Suit' ? 850 : garmentType === 'Abaya' ? 280 : 180;
+        const orderData = {
+            id: orderId,
+            tenantId,
+            customerId: `WEB-CUST-${shortCode}`,
+            customerName,
+            customerPhone,
+            orderDate: new Date().toISOString().slice(0, 10),
+            trialDate: preferredDate || new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10),
+            deliveryDate: new Date(Date.now() + 6 * 86400000).toISOString().slice(0, 10),
+            priority: 'Normal',
+            items: [{
+                jobCardId: `JC-${shortCode}-1`,
+                garmentType,
+                measurementProfileId: hasMeasurements ? profileId : '',
+                profileName: `${garmentType} (${collarType}, ${cuffType})`,
+                qty: 1,
+                fabricSource: fabricProductId ? 'Shop' : 'Customer',
+                fabricProductId,
+                fabricName: fabricName || 'Selected at Fitting / يحدد عند القياس',
+                fabricMeters: 3.5,
+                fabricPricePerMeter: 0,
+                stitchingPrice: baseStitchingPrice,
+                embroideryPrice: 0,
+                lineTotal: baseStitchingPrice,
+                stage: 'Received',
+                notes: `[Web Portal Booking] Preferred Fitting: ${preferredDate || 'ASAP'}. ${notes || ''}`.trim()
+            }],
+            totalAmount: baseStitchingPrice,
+            depositPaid: 0,
+            balanceDue: baseStitchingPrice,
+            paymentStatus: 'Unpaid',
+            paymentMethod: 'Cash',
+            status: 'InProduction',
+            notes: `Online Bespoke / Fitting Request (${preferredDate || 'Flexible'})`,
+            createdAt: new Date()
+        };
+
+        if (global.isMongoConnected) {
+            await TailoringOrder.create(orderData);
+        } else {
+            mockDb.tailoringOrders = mockDb.tailoringOrders || [];
+            mockDb.tailoringOrders.unshift(orderData);
+        }
+
+        res.status(201).json({ success: true, orderId, order: orderData });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }

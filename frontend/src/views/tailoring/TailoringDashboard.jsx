@@ -94,6 +94,9 @@ const TailoringDashboard = ({ settings, currentLanguage, setActiveTab, formatCur
                     <button className="btn btn-secondary" onClick={() => setActiveTab && setActiveTab('tailoring_workshop')}>
                         <i className="ri-kanban-view"></i> {isAr ? 'لوحة المشغل والإنتاج' : 'Workshop Kanban'}
                     </button>
+                    <button className="btn btn-secondary" onClick={() => window.open('/tailoring-portal' + window.location.search, '_blank')} title={isAr ? 'معاينة بوابة العميل للخياطة والتفصيل' : 'Open Public Tailoring Client Portal'}>
+                        <i className="ri-external-link-line"></i> {isAr ? 'بوابة العميل (الموقع)' : 'Client Web Portal'}
+                    </button>
                     <button className="btn btn-secondary" onClick={handleSeedSampleData} title={isAr ? 'إعادة تحميل البيانات التجريبية' : 'Load / Reset Sample Data'}>
                         <i className="ri-database-2-line"></i> {isAr ? 'تحميل بيانات تجريبية' : 'Load Sample Data'}
                     </button>

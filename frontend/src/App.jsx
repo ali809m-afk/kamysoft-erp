@@ -60,6 +60,7 @@ import TailoringDashboard from './views/tailoring/TailoringDashboard';
 import MeasurementProfiles from './views/tailoring/MeasurementProfiles';
 import TailoringOrders from './views/tailoring/TailoringOrders';
 import WorkshopKanban from './views/tailoring/WorkshopKanban';
+import TailoringWebPortal from './views/tailoring/TailoringWebPortal';
 
 import { applyTheme } from './themes/themeManager';
 
@@ -975,7 +976,7 @@ export default function App() {
         }
     }, [routeMode, token]);
 
-    // Auto-configure POS Business Type based on Subdomain or URL ?sector=X parameter
+    // Auto-configure POS Business Type based on Subdomain or URL ?sector=X parameter (and fetch tenant settings for unauthenticated portal)
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);
         const querySector = params.get('sector');
@@ -985,7 +986,9 @@ export default function App() {
             activeSector = querySector.toLowerCase();
         } else if (routeMode === 'customer' && tenantId) {
             const cleanTenant = tenantId.toLowerCase();
-            if (cleanTenant.includes('restaurant')) activeSector = 'restaurant';
+            if (cleanTenant.includes('tailor') || cleanTenant.includes('thobe') || cleanTenant.includes('atelier') || cleanTenant.includes('khayata')) activeSector = 'tailoring';
+            else if (cleanTenant.includes('hotel') || cleanTenant.includes('property') || cleanTenant.includes('realestate') || cleanTenant.includes('resort') || cleanTenant.includes('suites')) activeSector = 'realestate';
+            else if (cleanTenant.includes('restaurant') || cleanTenant.includes('cafe')) activeSector = 'restaurant';
             else if (cleanTenant.includes('furniture')) activeSector = 'furniture';
             else if (cleanTenant.includes('spareparts') || cleanTenant.includes('parts')) activeSector = 'spareparts';
             else if (cleanTenant.includes('grocery') || cleanTenant.includes('supermarket')) activeSector = 'grocery';
@@ -996,7 +999,7 @@ export default function App() {
         }
 
         if (activeSector) {
-            const supportedSectors = ['retail', 'restaurant', 'services', 'appliances', 'furniture', 'spareparts', 'apparel', 'grocery', 'freshFlowers'];
+            const supportedSectors = ['retail', 'restaurant', 'services', 'appliances', 'furniture', 'spareparts', 'apparel', 'grocery', 'freshFlowers', 'tailoring', 'realestate'];
             if (supportedSectors.includes(activeSector)) {
                 setSettings(prev => ({
                     ...prev,
@@ -1006,12 +1009,26 @@ export default function App() {
                     enableServiceDuration: activeSector === 'services',
                     enabledModules: {
                         ...(prev.enabledModules || {}),
-                        ...(activeSector === 'freshFlowers' ? { freshFlowers: true } : {})
+                        ...(activeSector === 'freshFlowers' ? { freshFlowers: true } : {}),
+                        ...(activeSector === 'tailoring' ? { tailoring: true } : {}),
+                        ...(activeSector === 'realestate' ? { propertyManagement: true } : {})
                     }
                 }));
             }
         }
-    }, [routeMode, tenantId]);
+
+        // Also load tenant settings publicly on customer subdomains when unauthenticated so root portal knows businessType
+        if (routeMode === 'customer' && tenantId && !token) {
+            fetch('/api/settings', { headers: { 'x-tenant-id': tenantId } })
+                .then(res => res.ok ? res.json() : null)
+                .then(data => {
+                    if (data && !data.error) {
+                        setSettings(prev => ({ ...prev, ...data }));
+                    }
+                })
+                .catch(() => {});
+        }
+    }, [routeMode, tenantId, token]);
 
     // ----------------------------------------------------
     // LOGIN & AUTHENTICATION HANDLERS
@@ -2263,7 +2280,39 @@ const handleB2BSubmit = () => {
         );
     }
 
+    const isTailoringPortalPath = window.location.pathname === '/tailoring-portal' || window.location.pathname.startsWith('/tailoring-portal/');
+    if ((routeMode === 'customer' || routeMode === 'demo') && isTailoringPortalPath) {
+        return (
+            <TailoringWebPortal
+                tenantId={tenantId || 'default'}
+                currentLanguage={currentLanguage}
+                setLanguage={setCurrentLanguage}
+                initialSettings={settings}
+            />
+        );
+    }
+
     if (routeMode === 'customer' && isRootPath) {
+        const lowerTenant = (tenantId || '').toLowerCase();
+        const isTailoringTenant =
+            settings?.businessType === 'tailoring' ||
+            (settings?.enabledModules?.tailoring && !settings?.enabledModules?.propertyManagement && settings?.businessType !== 'realestate') ||
+            lowerTenant.includes('tailor') ||
+            lowerTenant.includes('thobe') ||
+            lowerTenant.includes('atelier') ||
+            lowerTenant.includes('khayata');
+
+        if (isTailoringTenant) {
+            return (
+                <TailoringWebPortal
+                    tenantId={tenantId}
+                    currentLanguage={currentLanguage}
+                    setLanguage={setCurrentLanguage}
+                    initialSettings={settings}
+                />
+            );
+        }
+
         return (
             <TenantWebPortal 
                 tenantId={tenantId}
