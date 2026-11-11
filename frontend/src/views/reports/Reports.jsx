@@ -60,8 +60,14 @@ const Reports = (props) => {
             return invD ? localDateKey(invD) === selectedDate : false;
         });
 
-        const totalDailySales = dayInvoices.reduce((sum, inv) => sum + (Number(inv.total) || 0), 0);
-        const totalDailyVat = dayInvoices.reduce((sum, inv) => sum + (Number(inv.vat) || 0), 0);
+        // Refunded invoices are listed but not counted in the day's totals
+        const isRefunded = (inv) => inv.zatcaStatus === 'REFUNDED';
+        const activeDayInvoices = dayInvoices.filter(inv => !isRefunded(inv));
+        const refundedDayInvoices = dayInvoices.filter(isRefunded);
+        const refundedTotal = refundedDayInvoices.reduce((sum, inv) => sum + (Number(inv.total) || 0), 0);
+
+        const totalDailySales = activeDayInvoices.reduce((sum, inv) => sum + (Number(inv.total) || 0), 0);
+        const totalDailyVat = activeDayInvoices.reduce((sum, inv) => sum + (Number(inv.vat) || 0), 0);
         const netDailySales = totalDailySales - totalDailyVat;
 
         // Breakdown by payment modes
@@ -81,8 +87,26 @@ const Reports = (props) => {
             other: 0
         };
 
-        dayInvoices.forEach(inv => {
+        activeDayInvoices.forEach(inv => {
             const method = (inv.paymentMethod || 'cash').toLowerCase();
+            const total = Number(inv.total || 0);
+            // Split payments are saved as "Split / مجزأ (Cash: 50 SAR, Card: 50 SAR)".
+            // Check them first: the text contains "cash", so they used to be counted
+            // entirely as cash. Put the cash part under Cash and the card part under
+            // Mada (شبكة); if the amounts can't be read, keep the invoice under Split.
+            if (method.includes('split')) {
+                const cashMatch = method.match(/cash:\s*([\d.]+)/);
+                const cardMatch = method.match(/card:\s*([\d.]+)/);
+                const cashPart = cashMatch ? parseFloat(cashMatch[1]) : NaN;
+                const cardPart = cardMatch ? parseFloat(cardMatch[1]) : NaN;
+                if (!isNaN(cashPart) && !isNaN(cardPart) && Math.abs(cashPart + cardPart - total) <= 1) {
+                    paymentBreakdown.cash += cashPart;
+                    paymentBreakdown.mada += total - cashPart;
+                } else {
+                    paymentBreakdown.split += total;
+                }
+                return;
+            }
             if (method.includes('cash')) paymentBreakdown.cash += Number(inv.total || 0);
             else if (method.includes('mada')) paymentBreakdown.mada += Number(inv.total || 0);
             else if (method.includes('visa')) paymentBreakdown.visa += Number(inv.total || 0);
@@ -94,7 +118,6 @@ const Reports = (props) => {
             else if (method.includes('hunger')) paymentBreakdown.hungerstation += Number(inv.total || 0);
             else if (method.includes('tabby') || method.includes('tabbi')) paymentBreakdown.tabby += Number(inv.total || 0);
             else if (method.includes('tamara')) paymentBreakdown.tamara += Number(inv.total || 0);
-            else if (method.includes('split')) paymentBreakdown.split += Number(inv.total || 0);
             else paymentBreakdown.other += Number(inv.total || 0);
         });
 
@@ -155,7 +178,7 @@ const Reports = (props) => {
                     <div className="glass-card gold">
                         <div className="card-stat">
                             <div className="stat-info">
-                                <h3>{currentLanguage === 'ar' ? 'تطبيقات التوصيل (جاهز/هنقر/كيتا/نينجا)' : 'Delivery Apps Total'}</h3>
+                                <h3>{currentLanguage === 'ar' ? 'تطبيقات التوصيل (هنقر/كيتا/نينجا)' : 'Delivery Apps Total'}</h3>
                                 <div className="stat-value">{formatCurrency(deliveryAppsTotal)}</div>
                             </div>
                             <div className="stat-icon"><i className="ri-e-bike-2-line"></i></div>
@@ -166,7 +189,14 @@ const Reports = (props) => {
                         <div className="card-stat">
                             <div className="stat-info">
                                 <h3>{translations[currentLanguage]?.invoiceCount || (currentLanguage === 'ar' ? 'عدد الفواتير' : 'Invoices Count')}</h3>
-                                <div className="stat-value">{dayInvoices.length}</div>
+                                <div className="stat-value">{activeDayInvoices.length}</div>
+                                {refundedDayInvoices.length > 0 && (
+                                    <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                                        {currentLanguage === 'ar'
+                                            ? `+ ${refundedDayInvoices.length} مسترجعة (${formatCurrency(refundedTotal)}) غير محتسبة`
+                                            : `+ ${refundedDayInvoices.length} refunded (${formatCurrency(refundedTotal)}) not counted`}
+                                    </div>
+                                )}
                             </div>
                             <div className="stat-icon"><i className="ri-file-list-3-line"></i></div>
                         </div>
@@ -242,7 +272,7 @@ const Reports = (props) => {
                                 </tr>
                             ) : (
                                 dayInvoices.map(inv => (
-                                    <tr key={inv.id}>
+                                    <tr key={inv.id} style={isRefunded(inv) ? { opacity: 0.55, textDecoration: 'line-through' } : undefined}>
                                         <td><strong>{inv.id}</strong></td>
                                         <td>{inv.date}</td>
                                         <td>{inv.customer || (currentLanguage === 'ar' ? 'عميل نقدي' : 'Cash Customer')}</td>
@@ -250,6 +280,11 @@ const Reports = (props) => {
                                             <span className="status-badge valid" style={{ display: 'inline-block', padding: '2px 8px', borderRadius: '4px', fontSize: '11px' }}>
                                                 {inv.paymentMethod || 'Cash'}
                                             </span>
+                                            {isRefunded(inv) && (
+                                                <span className="status-badge" style={{ display: 'inline-block', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', marginInlineStart: '4px', textDecoration: 'none' }}>
+                                                    {currentLanguage === 'ar' ? 'مسترجعة' : 'Refunded'}
+                                                </span>
+                                            )}
                                         </td>
                                         <td style={{ textAlign: 'right' }}>{formatCurrency((Number(inv.total) || 0) - (Number(inv.vat) || 0))}</td>
                                         <td style={{ textAlign: 'right' }}>{formatCurrency(Number(inv.vat) || 0)}</td>
