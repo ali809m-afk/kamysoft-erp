@@ -4738,35 +4738,138 @@ router.post('/api/leads/:id/convert', authenticateToken, async (req, res) => {
 // RESTAURANT MODULE ENDPOINTS
 // ==========================================
 
+// --- Storage: MongoDB when connected, otherwise the in-memory store (portable/demo mode).
+// Both paths work on plain objects so the routes below have one code path.
+if (!mockDb.printerConfigs) mockDb.printerConfigs = [];
+if (!mockDb.restaurantOrders) mockDb.restaurantOrders = [];
+
+const restaurantStore = {
+    async listPrinters(tenantId) {
+        if (global.isMongoConnected) return PrinterConfig.find({ tenantId }).lean();
+        return mockDb.printerConfigs.filter(p => p.tenantId === tenantId);
+    },
+    async savePrinter(tenantId, data) {
+        if (global.isMongoConnected) {
+            await PrinterConfig.findOneAndUpdate({ category: data.category, tenantId }, { ...data, tenantId }, { upsert: true });
+            return;
+        }
+        const idx = mockDb.printerConfigs.findIndex(p => p.tenantId === tenantId && p.category === data.category);
+        const row = { ...data, tenantId };
+        if (idx >= 0) mockDb.printerConfigs[idx] = row; else mockDb.printerConfigs.push(row);
+    },
+    async deletePrinter(tenantId, category) {
+        if (global.isMongoConnected) return PrinterConfig.findOneAndDelete({ category, tenantId });
+        mockDb.printerConfigs = mockDb.printerConfigs.filter(p => !(p.tenantId === tenantId && p.category === category));
+    },
+    async listOpenOrders(tenantId) {
+        if (global.isMongoConnected) return RestaurantOrder.find({ status: 'Open', tenantId }).lean();
+        return mockDb.restaurantOrders.filter(o => o.tenantId === tenantId && o.status === 'Open');
+    },
+    async getOrder(tenantId, id) {
+        if (global.isMongoConnected) return RestaurantOrder.findOne({ id, tenantId }).lean();
+        return mockDb.restaurantOrders.find(o => o.tenantId === tenantId && o.id === id) || null;
+    },
+    async findOpenOrderByTable(tenantId, tableNumber) {
+        if (global.isMongoConnected) return RestaurantOrder.findOne({ tableNumber, status: 'Open', tenantId }).lean();
+        return mockDb.restaurantOrders.find(o => o.tenantId === tenantId && o.status === 'Open' && o.tableNumber === tableNumber) || null;
+    },
+    async saveOrder(tenantId, order) {
+        const doc = { ...order, tenantId };
+        delete doc._id; delete doc.__v;
+        if (global.isMongoConnected) {
+            return RestaurantOrder.findOneAndUpdate({ id: doc.id, tenantId }, doc, { upsert: true, new: true }).lean();
+        }
+        const idx = mockDb.restaurantOrders.findIndex(o => o.tenantId === tenantId && o.id === doc.id);
+        if (idx >= 0) mockDb.restaurantOrders[idx] = doc; else mockDb.restaurantOrders.push(doc);
+        return doc;
+    },
+    async deleteOrder(tenantId, id) {
+        if (global.isMongoConnected) return RestaurantOrder.findOneAndDelete({ id, tenantId });
+        mockDb.restaurantOrders = mockDb.restaurantOrders.filter(o => !(o.tenantId === tenantId && o.id === id));
+    }
+};
+
+// Only Admins and Managers may change printers or send test prints (the server opens the connection)
+const requirePrinterAdmin = (req, res, next) => (['Admin', 'Manager'].includes(req.user && req.user.role) ? next() : res.status(403).json({ error: 'Only an Admin or Manager can change printers' }));
+
+const FALLBACK_PRINTER_CATEGORY = '*';
+const normCategory = (c) => String(c || '').trim().toLowerCase();
+// Items printed before printedQty existed only have isPrinted
+const printedQtyOf = (item) => (typeof item.printedQty === 'number' ? item.printedQty : (item.isPrinted ? item.qty : 0));
+
+// Time on tickets in the store's local time (servers often run in UTC)
+const kitchenTime = () => new Date().toLocaleString('en-GB', {
+    timeZone: process.env.APP_TIMEZONE || 'Asia/Riyadh', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+});
+
+const isValidPrinterHost = (ip) => typeof ip === 'string' && /^[A-Za-z0-9.\-:]{1,253}$/.test(ip.trim());
+
+// Send ESC/POS lines to a network printer (raw TCP, usually port 9100)
+async function sendToNetworkPrinter(config, writeTicket) {
+    const printer = new ThermalPrinter({
+        type: PrinterTypes.EPSON,
+        interface: `tcp://${config.ip.trim()}:${Number(config.port) || 9100}`,
+        options: { timeout: 4000 }
+    });
+    writeTicket(printer);
+    printer.cut();
+    await printer.execute();
+}
+
 // Get Printer Configs
 router.get('/api/printers', authenticateToken, async (req, res) => {
     try {
-        const configs = await PrinterConfig.find({ tenantId: req.tenantId });
-        res.json(configs);
+        res.json(await restaurantStore.listPrinters(req.tenantId));
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-// Save Printer Config
-router.post('/api/printers', authenticateToken, async (req, res) => {
+// Save Printer Config (one printer per category; '*' = fallback for all other categories)
+router.post('/api/printers', authenticateToken, requirePrinterAdmin, async (req, res) => {
     try {
-        const { category, ip, port } = req.body;
-        await PrinterConfig.findOneAndUpdate(
-            { category, tenantId: req.tenantId },
-            { ip, port: port || 9100 },
-            { upsert: true }
-        );
+        const { category, name, ip, port, brand, model } = req.body || {};
+        if (!category || !String(category).trim()) return res.status(400).json({ error: 'Category is required' });
+        if (!isValidPrinterHost(ip)) return res.status(400).json({ error: 'A valid printer IP address or host name is required' });
+        const portNum = Number(port) || 9100;
+        if (portNum < 1 || portNum > 65535) return res.status(400).json({ error: 'Port must be between 1 and 65535' });
+        await restaurantStore.savePrinter(req.tenantId, {
+            category: String(category).trim(),
+            name: name ? String(name).trim() : '',
+            ip: ip.trim(), port: portNum,
+            brand: brand || '', model: model || ''
+        });
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-// Delete Printer Config
-router.delete('/api/printers/:category', authenticateToken, async (req, res) => {
+// Print a test ticket on a printer (before or after saving it)
+router.post('/api/printers/test', authenticateToken, requirePrinterAdmin, async (req, res) => {
+    const { ip, port, name, category } = req.body || {};
+    if (!isValidPrinterHost(ip)) return res.status(400).json({ success: false, error: 'A valid printer IP address or host name is required' });
     try {
-        await PrinterConfig.findOneAndDelete({ category: req.params.category, tenantId: req.tenantId });
+        await sendToNetworkPrinter({ ip, port }, (printer) => {
+            printer.alignCenter();
+            printer.println('--- PRINTER TEST ---');
+            printer.println(name || 'Kitchen printer');
+            printer.println(`Category: ${category === FALLBACK_PRINTER_CATEGORY ? 'All other items' : (category || '-')}`);
+            printer.println(`${ip}:${Number(port) || 9100}`);
+            printer.println(kitchenTime());
+            printer.drawLine();
+        });
+        res.json({ success: true });
+    } catch (err) {
+        res.json({ success: false, error: err.message || 'Printer did not respond' });
+    }
+});
+
+// Delete Printer Config
+router.delete('/api/printers/:category', authenticateToken, requirePrinterAdmin, async (req, res) => {
+    try {
+        await restaurantStore.deletePrinter(req.tenantId, req.params.category);
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -4776,23 +4879,71 @@ router.delete('/api/printers/:category', authenticateToken, async (req, res) => 
 // Get all open restaurant orders
 router.get('/api/restaurant/orders', authenticateToken, async (req, res) => {
     try {
-        const orders = await RestaurantOrder.find({ status: 'Open', tenantId: req.tenantId });
-        res.json(orders);
+        res.json(await restaurantStore.listOpenOrders(req.tenantId));
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-// Save or Update an open restaurant order
+// Save or update the open order of a table.
+// - Without an id, the table's existing open order is reused (one open order per table).
+// - printedQty is kept from the stored order, so items already sent to the kitchen
+//   are not printed again; items removed after printing stay with qty 0 until the
+//   cancellation has been printed.
 router.post('/api/restaurant/orders', authenticateToken, async (req, res) => {
     try {
-        const { id, tableNumber, customer, items, subtotal, vat, total } = req.body;
-        const newOrder = await RestaurantOrder.findOneAndUpdate(
-            { id, tenantId: req.tenantId },
-            { tableNumber, customer, items, subtotal, vat, total, status: 'Open' },
-            { upsert: true, new: true }
-        );
-        res.json(newOrder);
+        const { id, tableNumber, customer, items, subtotal, discount, vat, total } = req.body || {};
+        if (!tableNumber) return res.status(400).json({ error: 'Table number is required' });
+        if (!Array.isArray(items)) return res.status(400).json({ error: 'Items are required' });
+
+        let existing = id ? await restaurantStore.getOrder(req.tenantId, id) : null;
+        if (!existing) existing = await restaurantStore.findOpenOrderByTable(req.tenantId, String(tableNumber));
+        if (existing && existing.status !== 'Open') existing = null;
+
+        const previous = (existing && existing.items) || [];
+        const merged = items.map(item => {
+            const prev = previous.find(p => p.productId === item.productId);
+            const printedQty = prev ? printedQtyOf(prev) : 0;
+            const qty = Math.max(0, Number(item.qty) || 0);
+            return {
+                productId: String(item.productId),
+                name: item.name, nameEN: item.nameEN || item.name, nameAR: item.nameAR || item.name,
+                price: Number(item.price) || 0, qty,
+                category: item.category || '',
+                printedQty, isPrinted: printedQty >= qty && qty > 0
+            };
+        });
+        // Removed from the cart after the kitchen got them -> keep as qty 0 so a cancel is printed
+        previous.forEach(prev => {
+            if (!merged.some(m => m.productId === prev.productId) && printedQtyOf(prev) > 0) {
+                merged.push({ ...prev, qty: 0, printedQty: printedQtyOf(prev), isPrinted: false });
+            }
+        });
+
+        const saved = await restaurantStore.saveOrder(req.tenantId, {
+            id: existing ? existing.id : (id || `REST-${Date.now()}`),
+            tableNumber: String(tableNumber), customer: customer || '',
+            items: merged,
+            subtotal: Number(subtotal) || 0, discount: Number(discount) || 0,
+            vat: Number(vat) || 0, total: Number(total) || 0,
+            status: 'Open',
+            date: existing && existing.date ? existing.date : new Date()
+        });
+        res.json(saved);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Close a table after it has been paid (keeps the order with its invoice number)
+router.post('/api/restaurant/orders/:id/close', authenticateToken, async (req, res) => {
+    try {
+        const order = await restaurantStore.getOrder(req.tenantId, req.params.id);
+        if (!order) return res.status(404).json({ error: 'Order not found' });
+        const saved = await restaurantStore.saveOrder(req.tenantId, {
+            ...order, status: 'Paid', invoiceId: (req.body && req.body.invoiceId) || '', closedAt: new Date()
+        });
+        res.json({ success: true, order: saved });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -4801,81 +4952,85 @@ router.post('/api/restaurant/orders', authenticateToken, async (req, res) => {
 // Delete a restaurant order
 router.delete('/api/restaurant/orders/:id', authenticateToken, async (req, res) => {
     try {
-        await RestaurantOrder.findOneAndDelete({ id: req.params.id, tenantId: req.tenantId });
+        await restaurantStore.deleteOrder(req.tenantId, req.params.id);
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-// Print KOT (Kitchen Order Ticket)
+// Print KOT (Kitchen Order Ticket) on multiple printers.
+// Only what changed since the last ticket is printed: new items / extra quantity,
+// and "CANCEL" lines for quantities removed after they were sent. Each item goes
+// to the printer of its category, or to the fallback printer ('*'). Items that go
+// to the same printer share one ticket. A printer that fails keeps its items
+// unprinted, so firing again retries only those.
 router.post('/api/restaurant/orders/:id/print-kot', authenticateToken, async (req, res) => {
     try {
-        const order = await RestaurantOrder.findOne({ id: req.params.id, tenantId: req.tenantId });
+        const order = await restaurantStore.getOrder(req.tenantId, req.params.id);
         if (!order) return res.status(404).json({ error: 'Order not found' });
 
-        const printerConfigs = await PrinterConfig.find({ tenantId: req.tenantId });
+        const printerConfigs = await restaurantStore.listPrinters(req.tenantId);
+        const fallback = printerConfigs.find(c => c.category === FALLBACK_PRINTER_CATEGORY);
+        const items = order.items.map(i => ({ ...i, printedQty: printedQtyOf(i) }));
 
-        // Group unprinted items by category
-        const itemsToPrint = order.items.filter(item => !item.isPrinted);
-        if (itemsToPrint.length === 0) {
-            return res.json({ success: true, message: 'No new items to print' });
+        const pending = items.filter(i => i.qty !== i.printedQty);
+        if (pending.length === 0) {
+            return res.json({ success: true, message: 'No new items to print', results: [], unrouted: [] });
         }
 
-        const groupedItems = {};
-        itemsToPrint.forEach(item => {
-            const cat = item.category || 'General';
-            if (!groupedItems[cat]) groupedItems[cat] = [];
-            groupedItems[cat].push(item);
+        // Group pending items by destination printer (ip:port)
+        const groups = new Map();
+        const unrouted = [];
+        pending.forEach(item => {
+            const config = printerConfigs.find(c => c.category !== FALLBACK_PRINTER_CATEGORY && normCategory(c.category) === normCategory(item.category)) || fallback;
+            if (!config || !config.ip) { unrouted.push({ name: item.nameEN || item.name, category: item.category || '' }); return; }
+            const key = `${config.ip.trim()}:${Number(config.port) || 9100}`;
+            if (!groups.has(key)) groups.set(key, { config, items: [] });
+            groups.get(key).items.push(item);
         });
 
-        const printResults = [];
-
-        // Print each group to its configured printer
-        for (const [category, items] of Object.entries(groupedItems)) {
-            const config = printerConfigs.find(c => c.category === category);
-            
-            if (!config || !config.ip) {
-                printResults.push({ category, success: false, error: 'No printer configured for this category' });
-                continue;
-            }
-
+        const results = [];
+        for (const { config, items: groupItems } of groups.values()) {
+            const label = config.name || (config.category === FALLBACK_PRINTER_CATEGORY ? 'Default printer' : config.category);
             try {
-                let printer = new ThermalPrinter({
-                    type: PrinterTypes.EPSON,
-                    interface: `tcp://${config.ip}:${config.port}`
+                await sendToNetworkPrinter(config, (printer) => {
+                    printer.alignCenter();
+                    printer.bold(true);
+                    printer.println('--- KITCHEN TICKET ---');
+                    printer.println(label.toUpperCase());
+                    printer.bold(false);
+                    printer.println(`Table: ${order.tableNumber}   Order: ${order.id}`);
+                    printer.println(kitchenTime());
+                    printer.drawLine();
+                    printer.alignLeft();
+                    groupItems.forEach(item => {
+                        // English name: ESC/POS printers can't render Arabic text without an image renderer
+                        const name = item.nameEN || item.name;
+                        const delta = item.qty - item.printedQty;
+                        if (delta > 0) printer.println(`${delta}x ${name}`);
+                        else printer.println(`CANCEL ${-delta}x ${name}`);
+                    });
+                    printer.drawLine();
                 });
-
-                printer.alignCenter();
-                printer.println("--- KITCHEN TICKET ---");
-                printer.println(`Table: ${order.tableNumber}`);
-                printer.println(`Date: ${new Date().toLocaleString()}`);
-                printer.drawLine();
-                
-                printer.alignLeft();
-                items.forEach(item => {
-                    printer.println(`${item.qty}x ${item.name}`);
+                groupItems.forEach(gi => {
+                    const target = items.find(i => i.productId === gi.productId);
+                    target.printedQty = target.qty;
                 });
-                
-                printer.drawLine();
-                printer.cut();
-
-                const executePrint = await printer.execute();
-                printResults.push({ category, success: true });
-
-                // Mark items as printed
-                items.forEach(item => {
-                    item.isPrinted = true;
-                });
+                results.push({ printer: label, address: `${config.ip}:${config.port || 9100}`, success: true, lines: groupItems.length });
             } catch (err) {
-                printResults.push({ category, success: false, error: err.message });
+                results.push({ printer: label, address: `${config.ip}:${config.port || 9100}`, success: false, error: err.message || 'Printer did not respond', lines: groupItems.length });
             }
         }
 
-        // Save updated order
-        await order.save();
+        // Drop cancelled lines whose cancellation has been printed; refresh isPrinted
+        const remaining = items
+            .filter(i => !(i.qty === 0 && i.printedQty === 0))
+            .map(i => ({ ...i, isPrinted: i.qty > 0 && i.printedQty >= i.qty }));
+        await restaurantStore.saveOrder(req.tenantId, { ...order, items: remaining });
 
-        res.json({ success: true, results: printResults });
+        const allPrinted = results.every(r => r.success) && unrouted.length === 0;
+        res.json({ success: allPrinted, results, unrouted });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }

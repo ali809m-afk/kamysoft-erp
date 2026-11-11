@@ -811,6 +811,8 @@ export default function App() {
     const [activeCoupon, setActiveCoupon] = useState(null);
     // Cashier's manual discount in the POS: a percentage of the subtotal or a fixed amount
     const [manualDiscount, setManualDiscount] = useState({ type: 'percent', value: '' });
+    // Open restaurant order loaded from Table Management (reused when the table is saved again)
+    const [activeRestaurantOrderId, setActiveRestaurantOrderId] = useState(null);
     const [posFilter, setPosFilter] = useState('all');
     const [posSearch, setPosSearch] = useState('');
     const [paymentMethod, setPaymentMethod] = useState('cash');
@@ -1270,9 +1272,10 @@ export default function App() {
             setCart([]);
             setActiveCoupon(null);
             setManualDiscount(d => ({ ...d, value: '' }));
+            setActiveRestaurantOrderId(null);
             return;
         }
-        const mappedCart = order.items.map(item => {
+        const mappedCart = order.items.filter(item => Number(item.qty) > 0).map(item => {
             const product = products.find(p => p.id === item.productId) || {
                 id: item.productId,
                 nameEN: item.name,
@@ -1287,119 +1290,103 @@ export default function App() {
         setTableNum(order.tableNumber);
         setActiveCoupon(null);
         setManualDiscount({ type: 'amount', value: Number(order.discount) > 0 ? String(order.discount) : '' });
+        setActiveRestaurantOrderId(order.id);
     };
 
-    const handleHoldTable = () => {
-        if (cart.length === 0 || !tableNum) {
-            alert(currentLanguage === 'ar' ? 'السلة فارغة أو لم يتم تحديد طاولة' : 'Cart is empty or no table selected');
-            return;
-        }
-        
+    // Builds the open order for the selected table from the cart. The order id of a
+    // table opened from Table Management is reused, so saving again updates that
+    // order instead of creating a second one for the same table.
+    const buildRestaurantOrder = () => {
         let subtotal = 0;
         const items = cart.map(c => {
             subtotal += c.product.price * c.qty;
-            return { 
-                productId: c.product.id, 
-                name: currentLanguage === 'ar' ? c.product.nameAR : c.product.nameEN, 
-                price: c.product.price, 
+            return {
+                productId: c.product.id,
+                name: currentLanguage === 'ar' ? c.product.nameAR : c.product.nameEN,
+                nameEN: c.product.nameEN || c.product.nameAR,
+                nameAR: c.product.nameAR || c.product.nameEN,
+                price: c.product.price,
                 qty: c.qty,
-                category: c.product.category,
-                isPrinted: false
+                category: c.product.category
             };
         });
-
         const discount = getCartDiscount(subtotal);
         const taxable = subtotal - discount;
         const vat = taxable * (settings.taxRate / 100);
-        const grandTotal = taxable + vat;
-
-        const orderData = {
-            id: `REST-${Date.now()}`,
+        return {
+            id: activeRestaurantOrderId || undefined,
             tableNumber: tableNum,
             customer: activeCustomer !== 'walk-in' ? customers.find(c => c.id === activeCustomer)?.name : '',
             items,
             subtotal,
             discount,
             vat,
-            total: grandTotal
+            total: taxable + vat
         };
-
-        fetch('/api/restaurant/orders', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(orderData)
-        })
-        .then(res => res.json())
-        .then(() => {
-            alert(currentLanguage === 'ar' ? 'تم حفظ الطاولة بنجاح' : 'Table held successfully');
-            setCart([]);
-            setActiveCoupon(null);
-            setManualDiscount(d => ({ ...d, value: '' }));
-            setTableNum('');
-            setActiveTab('tableManagement');
-        })
-        .catch(err => console.error(err));
     };
 
-    const handleFireToKitchen = () => {
+    const resetRestaurantCart = () => {
+        setCart([]);
+        setActiveCoupon(null);
+        setManualDiscount(d => ({ ...d, value: '' }));
+        setActiveRestaurantOrderId(null);
+        setTableNum('');
+        setActiveTab('tableManagement');
+    };
+
+    const saveRestaurantOrder = () => {
         if (cart.length === 0 || !tableNum) {
             alert(currentLanguage === 'ar' ? 'السلة فارغة أو لم يتم تحديد طاولة' : 'Cart is empty or no table selected');
-            return;
+            return Promise.resolve(null);
         }
-
-        const orderId = `REST-${Date.now()}`;
-        
-        let subtotal = 0;
-        const items = cart.map(c => {
-            subtotal += c.product.price * c.qty;
-            return { 
-                productId: c.product.id, 
-                name: currentLanguage === 'ar' ? c.product.nameAR : c.product.nameEN, 
-                price: c.product.price, 
-                qty: c.qty,
-                category: c.product.category,
-                isPrinted: false
-            };
-        });
-
-        const discount = getCartDiscount(subtotal);
-        const taxable = subtotal - discount;
-        const vat = taxable * (settings.taxRate / 100);
-        const grandTotal = taxable + vat;
-
-        const orderData = {
-            id: orderId,
-            tableNumber: tableNum,
-            customer: activeCustomer !== 'walk-in' ? customers.find(c => c.id === activeCustomer)?.name : '',
-            items,
-            subtotal,
-            vat,
-            total: grandTotal
-        };
-
-        fetch('/api/restaurant/orders', {
+        return fetch('/api/restaurant/orders', {
             method: 'POST',
             headers,
-            body: JSON.stringify(orderData)
-        })
-        .then(res => res.json())
-        .then(savedOrder => {
-            fetch(`/api/restaurant/orders/${savedOrder.id}/print-kot`, { method: 'POST', headers })
-                .then(res => res.json())
-                .then(printRes => {
-                    if (printRes.success) {
-                        alert(currentLanguage === 'ar' ? 'تم إرسال الطلب للمطبخ' : 'Order fired to kitchen');
-                        setCart([]);
-                        setActiveCoupon(null);
-                        setManualDiscount(d => ({ ...d, value: '' }));
-                        setTableNum('');
-                        setActiveTab('tableManagement');
-                    } else {
-                        alert(currentLanguage === 'ar' ? 'حدث خطأ أثناء الطباعة' : 'Error printing KOT');
-                    }
-                });
-        })
-        .catch(err => console.error(err));
+            body: JSON.stringify(buildRestaurantOrder())
+        }).then(res => res.json().then(data => {
+            if (!res.ok) throw new Error(data.error || 'Saving the table failed');
+            return data;
+        }));
+    };
+
+    const handleHoldTable = () => {
+        saveRestaurantOrder()
+            .then(saved => {
+                if (!saved) return;
+                alert(currentLanguage === 'ar' ? 'تم حفظ الطاولة بنجاح' : 'Table held successfully');
+                resetRestaurantCart();
+            })
+            .catch(err => alert((currentLanguage === 'ar' ? 'تعذر حفظ الطاولة: ' : 'Could not save the table: ') + err.message));
+    };
+
+    // Saves the table, then sends only new / changed items to the kitchen printers.
+    // Tells the cashier which printers worked, which failed and which items have no printer.
+    const handleFireToKitchen = () => {
+        saveRestaurantOrder()
+            .then(saved => {
+                if (!saved) return;
+                return fetch(`/api/restaurant/orders/${saved.id}/print-kot`, { method: 'POST', headers })
+                    .then(res => res.json())
+                    .then(printRes => {
+                        const ar = currentLanguage === 'ar';
+                        const lines = [];
+                        (printRes.results || []).forEach(r => lines.push(r.success
+                            ? `✓ ${r.printer} (${r.lines})`
+                            : `✗ ${r.printer} (${r.address}): ${r.error}`));
+                        if ((printRes.unrouted || []).length > 0) {
+                            lines.push((ar ? 'بدون طابعة: ' : 'No printer for: ') + printRes.unrouted.map(u => `${u.name}${u.category ? ` [${u.category}]` : ''}`).join(', '));
+                        }
+                        if (printRes.error) lines.push(printRes.error);
+                        let title;
+                        if (printRes.message === 'No new items to print') title = ar ? 'لا توجد أصناف جديدة للمطبخ' : 'No new items to send to the kitchen';
+                        else if (printRes.success) title = ar ? 'تم إرسال الطلب للمطبخ' : 'Order fired to kitchen';
+                        else title = ar ? 'لم تتم طباعة كل الأصناف. أعد الإرسال بعد إصلاح الطابعة؛ ستُطبع الأصناف غير المطبوعة فقط.' : 'Not everything printed. Fire again after fixing the printer; only the unprinted items will be sent.';
+                        alert([title, ...lines].join('\n'));
+                        // The order is saved either way; unprinted items stay pending on the table
+                        resetRestaurantCart();
+                    });
+            })
+            .catch(err => alert((currentLanguage === 'ar' ? 'تعذر الإرسال للمطبخ: ' : 'Could not send to the kitchen: ') + err.message));
     };
 
     const processCheckout = () => {
@@ -1454,6 +1441,12 @@ export default function App() {
         })
         .then(newInv => {
             let finalInv = newInv;
+            if (activeRestaurantOrderId) {
+                const closingId = activeRestaurantOrderId;
+                fetch(`/api/restaurant/orders/${closingId}/close`, { method: 'POST', headers, body: JSON.stringify({ invoiceId: newInv.id }) })
+                    .catch(err => console.error('Could not close table order', err));
+                setActiveRestaurantOrderId(null);
+            }
             setInvoices([...invoices, newInv]);
             setActiveInvoice(newInv);
             setInvoiceFormat(activeTab === 'b2bsale' ? 'a4' : 'thermal'); 
@@ -3516,7 +3509,7 @@ const handleB2BSubmit = () => {
                         <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', borderTop: '1px solid var(--glass-border)', paddingTop: '12px' }}>
                             <button className="btn btn-secondary" onClick={() => setShowInvoiceModal(false)}>{translations[currentLanguage].close}</button>
                             
-                            <button className="btn btn-primary" onClick={() => window.electronAPI ? window.electronAPI.printPreview() : window.print()}>{translations[currentLanguage].print}</button>
+                            <button className="btn btn-primary" onClick={() => window.print()}>{translations[currentLanguage].print}</button>
                         </div>
                         {showEmailModal && (
                             <div style={{ marginTop: '20px', padding: '15px', background: 'var(--bg-primary)', borderRadius: '8px', border: '1px solid var(--glass-border)' }}>
@@ -3688,7 +3681,7 @@ const handleB2BSubmit = () => {
                         </div>
                         <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '20px', borderTop: '1px solid var(--glass-border)', paddingTop: '12px' }}>
                             <button className="btn btn-secondary" onClick={() => setShowAssetQrModal(false)}>{translations[currentLanguage].close}</button>
-                            <button className="btn btn-primary" onClick={() => window.electronAPI ? window.electronAPI.printPreview() : window.print()}>{translations[currentLanguage].print}</button>
+                            <button className="btn btn-primary" onClick={() => window.print()}>{translations[currentLanguage].print}</button>
                         </div>
                     </div>
                 </div>
@@ -3962,7 +3955,7 @@ const handleB2BSubmit = () => {
 
                             <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', borderTop: '1px solid var(--glass-border)', paddingTop: '12px' }}>
                                 <button className="btn btn-secondary" onClick={() => setShowQuotationModal(false)}>{translations[currentLanguage].close}</button>
-                                <button className="btn btn-primary" onClick={() => window.electronAPI ? window.electronAPI.printPreview() : window.print()}>{translations[currentLanguage].print}</button>
+                                <button className="btn btn-primary" onClick={() => window.print()}>{translations[currentLanguage].print}</button>
                             </div>
                         </div>
                     </div>

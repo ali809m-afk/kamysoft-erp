@@ -605,10 +605,15 @@ const customDomainSchema = new mongoose.Schema({
 const CustomDomain = mongoose.model('CustomDomain', customDomainSchema);
 
 // Restaurant Module Schemas
+// One row per product category -> network printer. Category '*' is the fallback
+// printer for items whose category has no printer of its own.
 const printerConfigSchema = new mongoose.Schema({
     category: { type: String, required: true },
+    name: { type: String },          // e.g. "Grill", "Bar", "Kitchen"
     ip: { type: String, required: true },
     port: { type: Number, default: 9100 },
+    brand: { type: String },
+    model: { type: String },
     tenantId: { type: String, default: 'default', index: true }
 });
 printerConfigSchema.index({ category: 1, tenantId: 1 }, { unique: true });
@@ -622,16 +627,22 @@ const restaurantOrderSchema = new mongoose.Schema({
         {
             productId: { type: String, required: true },
             name: { type: String, required: true },
+            nameEN: { type: String },
+            nameAR: { type: String },
             price: { type: Number, required: true },
-            qty: { type: Number, required: true },
+            qty: { type: Number, required: true },   // 0 = removed after it was sent to the kitchen (cancel pending)
             category: { type: String },
+            printedQty: { type: Number, default: 0 }, // how many have been sent to the kitchen
             isPrinted: { type: Boolean, default: false }
         }
     ],
     status: { type: String, enum: ['Open', 'Paid'], default: 'Open' },
     subtotal: { type: Number, required: true },
+    discount: { type: Number, default: 0 },
     vat: { type: Number, required: true },
     total: { type: Number, required: true },
+    invoiceId: { type: String },
+    closedAt: { type: Date },
     date: { type: Date, default: Date.now },
     tenantId: { type: String, default: 'default', index: true }
 });

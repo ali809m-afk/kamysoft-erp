@@ -1,8 +1,17 @@
 import React, { useState, useEffect } from 'react';
 
-const PrinterSetup = ({ currentLanguage, translations, headers }) => {
+// Category '*' = fallback printer for every category without its own printer
+const FALLBACK = '*';
+const emptyForm = { category: '', name: '', ip: '', port: 9100, brand: 'Epson', model: 'epson-generic' };
+
+const PrinterSetup = ({ currentLanguage, translations, headers, products = [] }) => {
+    const ar = currentLanguage === 'ar';
     const [configs, setConfigs] = useState([]);
-    const [form, setForm] = useState({ category: '', ip: '', port: 9100, brand: 'Epson', model: 'epson-generic' });
+    const [form, setForm] = useState(emptyForm);
+    const [status, setStatus] = useState(null); // { ok: boolean, text: string }
+    const [testing, setTesting] = useState('');
+    const productCategories = [...new Set((products || []).map(p => p.category).filter(Boolean))];
+    const categoryLabel = (c) => (c === FALLBACK ? (ar ? 'كل الأصناف الأخرى (افتراضي)' : 'All other items (default)') : c);
     
     const printerBrands = [
         {
@@ -88,7 +97,7 @@ const PrinterSetup = ({ currentLanguage, translations, headers }) => {
     const fetchConfigs = () => {
         fetch('/api/printers', { headers })
             .then(res => res.json())
-            .then(data => setConfigs(data))
+            .then(data => setConfigs(Array.isArray(data) ? data : []))
             .catch(err => console.error(err));
     };
 
@@ -97,38 +106,84 @@ const PrinterSetup = ({ currentLanguage, translations, headers }) => {
     }, []);
 
     const handleSave = () => {
-        if (!form.category || !form.ip) return;
+        if (!form.category || !form.ip) {
+            setStatus({ ok: false, text: ar ? 'اختر الفئة وأدخل عنوان IP' : 'Choose a category and enter the IP address' });
+            return;
+        }
         fetch('/api/printers', {
             method: 'POST',
             headers,
             body: JSON.stringify(form)
         })
-        .then(res => res.json())
-        .then(() => {
+        .then(res => res.json().then(data => ({ ok: res.ok, data })))
+        .then(({ ok, data }) => {
+            if (!ok) { setStatus({ ok: false, text: data.error || 'Save failed' }); return; }
+            setStatus({ ok: true, text: ar ? 'تم حفظ الطابعة' : 'Printer saved' });
             fetchConfigs();
-            setForm({ category: '', ip: '', port: 9100, brand: 'Epson', model: 'epson-generic' });
+            setForm(emptyForm);
         })
-        .catch(err => console.error(err));
+        .catch(err => setStatus({ ok: false, text: err.message }));
+    };
+
+    // Prints a short test ticket so staff can confirm the IP/port and which printer is which
+    const handleTest = (printer) => {
+        if (!printer.ip) { setStatus({ ok: false, text: ar ? 'أدخل عنوان IP أولاً' : 'Enter the IP address first' }); return; }
+        setTesting(printer.category || printer.ip);
+        fetch('/api/printers/test', { method: 'POST', headers, body: JSON.stringify(printer) })
+            .then(res => res.json())
+            .then(data => setStatus(data.success
+                ? { ok: true, text: (ar ? 'تمت طباعة صفحة اختبار على ' : 'Test ticket printed on ') + (printer.name || printer.ip) }
+                : { ok: false, text: (ar ? 'فشل الاختبار: ' : 'Test failed: ') + (data.error || '') }))
+            .catch(err => setStatus({ ok: false, text: err.message }))
+            .finally(() => setTesting(''));
     };
 
     const handleDelete = (category) => {
-        fetch(`/api/printers/${category}`, { method: 'DELETE', headers })
+        fetch(`/api/printers/${encodeURIComponent(category)}`, { method: 'DELETE', headers })
             .then(() => fetchConfigs())
             .catch(err => console.error(err));
     };
 
     return (
         <div className="view-content active">
-            <h2>{currentLanguage === 'ar' ? 'إعدادات طابعات المطبخ' : 'Kitchen Printer Setup'}</h2>
-            
+            <h2>{ar ? 'إعدادات طابعات المطبخ' : 'Kitchen Printer Setup'}</h2>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '13px', margin: '6px 0 14px' }}>
+                {ar
+                    ? 'كل فئة أصناف تُطبع على طابعتها (مثلاً المشويات في المطبخ والمشروبات في البار). أضف طابعة "كل الأصناف الأخرى" لتُطبع عليها أي فئة بدون طابعة. يمكن ربط أكثر من فئة بنفس الطابعة.'
+                    : 'Each product category prints on its own printer (e.g. grills in the kitchen, drinks at the bar). Add an "All other items" printer to catch every category without one. Several categories can share one printer.'}
+            </p>
+
             <div className="glass-card" style={{ marginBottom: '20px' }}>
-                <div style={{ display: 'flex', gap: '10px' }}>
-                    <input 
-                        type="text" 
-                        placeholder={currentLanguage === 'ar' ? 'الفئة (مثل: المشويات)' : 'Category (e.g., Hot Food)'} 
-                        className="form-control" 
-                        value={form.category} 
-                        onChange={e => setForm({...form, category: e.target.value})} 
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                    <select
+                        className="form-control"
+                        aria-label={ar ? 'الفئة' : 'Category'}
+                        value={productCategories.includes(form.category) || form.category === FALLBACK || form.category === '' ? form.category : '__custom'}
+                        onChange={e => setForm({ ...form, category: e.target.value === '__custom' ? ' ' : e.target.value })}
+                        style={{ minWidth: '180px', flex: 1 }}
+                    >
+                        <option value="">{ar ? '— اختر الفئة —' : '— Choose category —'}</option>
+                        {productCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                        <option value={FALLBACK}>{categoryLabel(FALLBACK)}</option>
+                        <option value="__custom">{ar ? 'فئة أخرى…' : 'Other category…'}</option>
+                    </select>
+                    {form.category !== '' && form.category !== FALLBACK && !productCategories.includes(form.category) && (
+                        <input
+                            type="text"
+                            placeholder={ar ? 'اسم الفئة كما في المنتجات' : 'Category name as on the products'}
+                            className="form-control"
+                            value={form.category.trim() === '' ? '' : form.category}
+                            onChange={e => setForm({ ...form, category: e.target.value || ' ' })}
+                            style={{ flex: 1, minWidth: '160px' }}
+                        />
+                    )}
+                    <input
+                        type="text"
+                        placeholder={ar ? 'اسم الطابعة (مثل: البار)' : 'Printer name (e.g., Bar)'}
+                        className="form-control"
+                        value={form.name}
+                        onChange={e => setForm({ ...form, name: e.target.value })}
+                        style={{ flex: 1, minWidth: '140px' }}
                     />
                     <input 
                         type="text" 
@@ -142,7 +197,7 @@ const PrinterSetup = ({ currentLanguage, translations, headers }) => {
                         placeholder="Port (9100)" 
                         className="form-control" 
                         value={form.port} 
-                        onChange={e => setForm({...form, port: parseInt(e.target.value)})} 
+                        onChange={e => setForm({...form, port: parseInt(e.target.value) || ''})}
                         style={{ width: '100px' }}
                     />
                     <select 
@@ -169,32 +224,48 @@ const PrinterSetup = ({ currentLanguage, translations, headers }) => {
                             <option key={p.id} value={p.id}>{p.name}</option>
                         ))}
                     </select>
+                    <button className="btn btn-secondary" onClick={() => handleTest({ ...form, category: form.category.trim() })} disabled={!!testing}>
+                        <i className="ri-printer-line"></i> {ar ? 'طباعة تجريبية' : 'Test print'}
+                    </button>
                     <button className="btn btn-primary" onClick={handleSave}>
-                        <i className="ri-save-line"></i> {translations[currentLanguage].saveBtn}
+                        <i className="ri-save-line"></i> {translations[currentLanguage]?.saveBtn || (ar ? 'حفظ' : 'Save')}
                     </button>
                 </div>
+                {status && (
+                    <div role="status" style={{ marginTop: '10px', fontSize: '13px', color: status.ok ? 'var(--accent-success)' : 'var(--accent-danger)' }}>
+                        {status.text}
+                    </div>
+                )}
             </div>
 
             <div className="table-container">
                 <table>
                     <thead>
                         <tr>
-                            <th>{currentLanguage === 'ar' ? 'الفئة' : 'Category'}</th>
-                            <th>{currentLanguage === 'ar' ? 'الطراز' : 'Model'}</th>
-                            <th>{currentLanguage === 'ar' ? 'عنوان IP' : 'IP Address'}</th>
-                            <th>{currentLanguage === 'ar' ? 'المنفذ' : 'Port'}</th>
-                            <th>{currentLanguage === 'ar' ? 'إجراء' : 'Action'}</th>
+                            <th>{ar ? 'الفئة' : 'Category'}</th>
+                            <th>{ar ? 'الطابعة' : 'Printer'}</th>
+                            <th>{ar ? 'الطراز' : 'Model'}</th>
+                            <th>{ar ? 'عنوان IP' : 'IP Address'}</th>
+                            <th>{ar ? 'المنفذ' : 'Port'}</th>
+                            <th>{ar ? 'إجراء' : 'Action'}</th>
                         </tr>
                     </thead>
                     <tbody>
                         {configs.map(config => (
                             <tr key={config.category}>
-                                <td>{config.category}</td>
+                                <td>{categoryLabel(config.category)}</td>
+                                <td>{config.name || '-'}</td>
                                 <td>{allModels.find(p => p.id === config.model)?.name || config.model || 'Generic Printer'}</td>
                                 <td>{config.ip}</td>
                                 <td>{config.port}</td>
-                                <td>
-                                    <button className="action-btn delete" onClick={() => handleDelete(config.category)}>
+                                <td style={{ display: 'flex', gap: '6px' }}>
+                                    <button className="action-btn" title={ar ? 'طباعة تجريبية' : 'Test print'} aria-label={ar ? 'طباعة تجريبية' : 'Test print'} onClick={() => handleTest(config)} disabled={!!testing}>
+                                        <i className={testing === config.category ? 'ri-loader-4-line' : 'ri-printer-line'}></i>
+                                    </button>
+                                    <button className="action-btn" title={ar ? 'تعديل' : 'Edit'} aria-label={ar ? 'تعديل' : 'Edit'} onClick={() => setForm({ ...emptyForm, ...config, name: config.name || '', brand: config.brand || 'Epson', model: config.model || 'epson-generic' })}>
+                                        <i className="ri-edit-line"></i>
+                                    </button>
+                                    <button className="action-btn delete" title={ar ? 'حذف' : 'Delete'} aria-label={ar ? 'حذف' : 'Delete'} onClick={() => handleDelete(config.category)}>
                                         <i className="ri-delete-bin-line"></i>
                                     </button>
                                 </td>
@@ -202,8 +273,8 @@ const PrinterSetup = ({ currentLanguage, translations, headers }) => {
                         ))}
                         {configs.length === 0 && (
                             <tr>
-                                <td colSpan="5" style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
-                                    {currentLanguage === 'ar' ? 'لا توجد طابعات مضافة' : 'No printers configured'}
+                                <td colSpan="6" style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
+                                    {ar ? 'لا توجد طابعات مضافة' : 'No printers configured'}
                                 </td>
                             </tr>
                         )}
