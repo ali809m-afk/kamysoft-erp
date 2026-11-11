@@ -127,7 +127,10 @@ const Reports = (props) => {
         const deliveryAppsTotal = paymentBreakdown.ninja + paymentBreakdown.keeta + paymentBreakdown.hungerstation;
 
         return (
-            <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            // flexShrink 0 on the page and its sections: the page is a flex item squeezed to
+            // the window height, so sections shrank and their hidden overflow cut off the
+            // payment breakdown cards. Now the page grows and the main area scrolls.
+            <div className="glass-card report-page" style={{ display: 'flex', flexDirection: 'column', gap: '24px', flexShrink: 0 }}>
                 {/* Header & Date Controls */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px', borderBottom: '1px solid var(--glass-border)', paddingBottom: '15px' }}>
                     <div>
@@ -309,7 +312,7 @@ const Reports = (props) => {
 
     // Helper to render the standard sales report table (used for salesMovement)
     const renderSalesReport = (reportInvoices) => (
-        <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        <div className="glass-card report-page" style={{ display: 'flex', flexDirection: 'column', gap: '24px', flexShrink: 0 }}>
             {/* Sub Tabs Selection */}
             <div style={{ display: 'flex', gap: '12px', borderBottom: '1px solid var(--glass-border)', paddingBottom: '12px' }}>
                 <button className={`btn ${reportSubTab === 'daily' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setReportSubTab('daily')}>
