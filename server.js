@@ -618,6 +618,39 @@ const defaultProductsBySector = {
         { nameEN: 'Italian Super 130s Navy Suiting (Per Meter)', nameAR: 'قماش بدلة إيطالي كحلي فاخر (بالمتر)', price: 140, cost: 80, stock: 45, category: 'Fabrics', emoji: '🕴️', barcode: '628700100040' },
         { nameEN: 'Korean Silk Black Abaya Crepe (Per Meter)', nameAR: 'كريب حرير كوري أسود للعبايات (بالمتر)', price: 65, cost: 35, stock: 85, category: 'Fabrics', emoji: '👘', barcode: '628700100050' },
         { nameEN: 'Luxury Cufflinks Set (Silver/Onyx)', nameAR: 'طقم كبك رجالي فضي ملكي', price: 120, cost: 55, stock: 30, category: 'Accessories', emoji: '💎', barcode: '628700100060' }
+    ],
+    // Starter items for business types that used to get the retail electronics list
+    grocery: [
+        { nameEN: 'Fresh Tomatoes 1kg', nameAR: 'طماطم طازجة ١ كجم', price: 6.5, cost: 4, stock: 80, category: 'Vegetables', emoji: '🍅', barcode: '628300100010' },
+        { nameEN: 'Bananas 1kg', nameAR: 'موز ١ كجم', price: 7, cost: 4.5, stock: 70, category: 'Fruits', emoji: '🍌', barcode: '628300100020' },
+        { nameEN: 'Fresh Milk 2L', nameAR: 'حليب طازج ٢ لتر', price: 11, cost: 8, stock: 60, category: 'Dairy', emoji: '🥛', barcode: '628300100030' },
+        { nameEN: 'Basmati Rice 5kg', nameAR: 'أرز بسمتي ٥ كجم', price: 42, cost: 31, stock: 40, category: 'Pantry', emoji: '🍚', barcode: '628300100040' },
+        { nameEN: 'Arabic Bread (Pack)', nameAR: 'خبز عربي (ربطة)', price: 3, cost: 1.8, stock: 100, category: 'Bakery', emoji: '🫓', barcode: '628300100050' },
+        { nameEN: 'Eggs (30 pcs)', nameAR: 'بيض (٣٠ حبة)', price: 22, cost: 16, stock: 50, category: 'Dairy', emoji: '🥚', barcode: '628300100060' },
+        { nameEN: 'Dates Sukkari 1kg', nameAR: 'تمر سكري ١ كجم', price: 35, cost: 24, stock: 45, category: 'Pantry', emoji: '🌴', barcode: '628300100070' },
+        { nameEN: 'Laundry Detergent 3L', nameAR: 'منظف غسيل ٣ لتر', price: 29, cost: 20, stock: 35, category: 'Household', emoji: '🧴', barcode: '628300100080' }
+    ],
+    apparel: [
+        { nameEN: 'Classic White Thobe', nameAR: 'ثوب أبيض كلاسيك', price: 180, cost: 110, stock: 45, category: 'Men', emoji: '👔', barcode: '628400100010' },
+        { nameEN: 'Red Shemagh', nameAR: 'شماغ أحمر', price: 120, cost: 70, stock: 40, category: 'Men', emoji: '🧣', barcode: '628400100020' },
+        { nameEN: 'Embroidered Black Abaya', nameAR: 'عباءة سوداء مطرزة', price: 350, cost: 220, stock: 25, category: 'Women', emoji: '👘', barcode: '628400100030' },
+        { nameEN: 'Casual Dress', nameAR: 'فستان كاجوال', price: 210, cost: 130, stock: 20, category: 'Women', emoji: '👗', barcode: '628400100040' },
+        { nameEN: 'Kids T-Shirt', nameAR: 'تيشيرت أطفال', price: 45, cost: 22, stock: 60, category: 'Kids', emoji: '👕', barcode: '628400100050' },
+        { nameEN: 'Leather Sandals', nameAR: 'صندل جلد', price: 160, cost: 95, stock: 30, category: 'Shoes', emoji: '🩴', barcode: '628400100060' }
+    ],
+    services: [
+        { nameEN: 'General Consultation', nameAR: 'استشارة عامة', price: 150, cost: 0, stock: 999, category: 'Consultations', emoji: '🩺', barcode: '628500100010' },
+        { nameEN: 'Follow-up Visit', nameAR: 'زيارة متابعة', price: 100, cost: 0, stock: 999, category: 'Consultations', emoji: '📋', barcode: '628500100020' },
+        { nameEN: 'Home Visit', nameAR: 'زيارة منزلية', price: 300, cost: 0, stock: 999, category: 'Visits', emoji: '🏠', barcode: '628500100030' },
+        { nameEN: 'AC Maintenance Visit', nameAR: 'زيارة صيانة مكيف', price: 180, cost: 40, stock: 999, category: 'Maintenance', emoji: '🛠️', barcode: '628500100040' },
+        { nameEN: 'Annual Service Package', nameAR: 'باقة خدمة سنوية', price: 900, cost: 200, stock: 999, category: 'Packages', emoji: '📦', barcode: '628500100050' }
+    ],
+    salon: [
+        { nameEN: 'Haircut', nameAR: 'قص شعر', price: 60, cost: 0, stock: 999, category: 'Hair', emoji: '💇', barcode: '628600100010' },
+        { nameEN: 'Beard Trim & Shape', nameAR: 'تهذيب وتشكيل اللحية', price: 40, cost: 0, stock: 999, category: 'Grooming', emoji: '🧔', barcode: '628600100020' },
+        { nameEN: 'Hair Colouring', nameAR: 'صبغ الشعر', price: 220, cost: 60, stock: 999, category: 'Hair', emoji: '🎨', barcode: '628600100030' },
+        { nameEN: 'Facial Treatment', nameAR: 'تنظيف بشرة', price: 180, cost: 40, stock: 999, category: 'Skin care', emoji: '🧖', barcode: '628600100040' },
+        { nameEN: 'Manicure & Pedicure', nameAR: 'مناكير وباديكير', price: 150, cost: 30, stock: 999, category: 'Nails', emoji: '💅', barcode: '628600100050' }
     ]
 };
 

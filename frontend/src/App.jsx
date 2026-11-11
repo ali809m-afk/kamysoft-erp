@@ -36,6 +36,7 @@ import Employees from './views/people/Employees';
 import Sidebar from './components/Sidebar';
 import TableManagement from './views/restaurant/TableManagement';
 import PrinterSetup from './views/restaurant/PrinterSetup';
+import BusinessLandingPage from './views/storefront/BusinessLandingPage';
 import SaasAdmin from './SaasAdmin';
 import Maintenance from './views/services/Maintenance';
 import Properties from './views/realestate/Properties';
@@ -2349,11 +2350,28 @@ const handleB2BSubmit = () => {
             );
         }
 
+        // Property-management stores keep the property portal; every other business type
+        // gets a home page designed for its kind of business (it used to be the property
+        // portal for everyone).
+        const isRealEstateTenant =
+            settings?.businessType === 'realestate' ||
+            (!settings?.businessType && settings?.enabledModules?.propertyManagement);
+        if (isRealEstateTenant) {
+            return (
+                <TenantWebPortal
+                    tenantId={tenantId}
+                    currentLanguage={currentLanguage}
+                    setLanguage={setCurrentLanguage}
+                />
+            );
+        }
+
         return (
-            <TenantWebPortal 
+            <BusinessLandingPage
                 tenantId={tenantId}
                 currentLanguage={currentLanguage}
                 setLanguage={setCurrentLanguage}
+                initialSettings={settings?.tenantId === tenantId ? settings : null}
             />
         );
     }

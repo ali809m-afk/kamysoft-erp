@@ -851,16 +851,26 @@ router.post('/api/upload/digital-asset', authenticateToken, upload.single('file'
 });
 
 // STOREFRONT APIs (Publicly accessible but scoped to tenant)
+// Public product list (store home page and online store). Cost price, stock count and
+// digital download links are never sent to visitors.
+const toPublicProduct = (p) => {
+    const o = typeof p.toObject === 'function' ? p.toObject() : p;
+    return {
+        id: o.id, nameEN: o.nameEN, nameAR: o.nameAR, price: o.price,
+        category: o.category, emoji: o.emoji, barcode: o.barcode,
+        image: o.image || o.imageUrl || '',
+        isDigital: !!o.isDigital, variants: o.variants || [],
+        inStock: o.isDigital ? true : Number(o.stock) > 0
+    };
+};
+
 router.get('/api/storefront/products', async (req, res) => {
     try {
         const tenantId = getTenantId(req);
-        if (global.isMongoConnected) {
-            const products = await Product.find({ tenantId });
-            res.json(products);
-        } else {
-            const products = mockDb.products.filter(p => p.tenantId === tenantId);
-            res.json(products);
-        }
+        const products = global.isMongoConnected
+            ? await Product.find({ tenantId }).lean()
+            : mockDb.products.filter(p => p.tenantId === tenantId);
+        res.json(products.map(toPublicProduct));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -898,8 +908,16 @@ router.post('/api/storefront/orders', async (req, res) => {
             mockDb.orders.push(newOrder);
         }
 
-        // Process digital assets delivery
-        const digitalItems = items.filter(i => i.isDigital);
+        // Process digital assets delivery. The download link comes from this store's own
+        // product record, never from the request: the shopper's browser used to send
+        // digitalAssetUrl itself, so any storage key could be requested and emailed.
+        const requestedIds = [...new Set(items.map(i => String((i && (i.id || i.productId)) || '')).filter(Boolean))];
+        const storeProducts = global.isMongoConnected
+            ? await Product.find({ tenantId, id: { $in: requestedIds } }).lean()
+            : mockDb.products.filter(p => p.tenantId === tenantId && requestedIds.includes(String(p.id)));
+        const digitalItems = storeProducts
+            .filter(p => p.isDigital && p.digitalAssetUrl)
+            .map(p => ({ nameEN: p.nameEN, name: p.nameEN, digitalAssetUrl: p.digitalAssetUrl, digitalAssetInstructions: p.digitalAssetInstructions }));
         if (digitalItems.length > 0 && email) {
             let linksHtml = '<ul>';
             
