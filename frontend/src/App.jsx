@@ -934,22 +934,22 @@ export default function App() {
             .catch(() => console.log("Failed to fetch invoices"));
 
         // Fetch expenses
-        fetch('/api/expenses')
+        fetch('/api/expenses', { headers })
             .then(res => { if (!res.ok) throw new Error(); return res.json(); })
             .then(data => setExpenses(data))
             .catch(() => console.log("Failed to fetch expenses"));
 
         // Fetch assets
-        fetch('/api/assets')
+        fetch('/api/assets', { headers })
             .then(res => { if (!res.ok) throw new Error(); return res.json(); })
             .then(data => setAssets(data))
             .catch(() => console.log("Failed to fetch assets"));
 
         // Fetch CRM lists
-        fetch('/api/customers').then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setCustomers(data)).catch(() => {});
-        fetch('/api/employees').then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setEmployees(data)).catch(() => {});
-        fetch('/api/suppliers').then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setSuppliers(data)).catch(() => {});
-        fetch('/api/orders').then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setOrders(data)).catch(() => {});
+        fetch('/api/customers', { headers }).then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setCustomers(data)).catch(() => {});
+        fetch('/api/employees', { headers }).then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setEmployees(data)).catch(() => {});
+        fetch('/api/suppliers', { headers }).then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setSuppliers(data)).catch(() => {});
+        fetch('/api/orders', { headers }).then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setOrders(data)).catch(() => {});
         fetch('/api/users', { headers }).then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => { if (Array.isArray(data)) setUsersList(data); }).catch(() => {});
         fetch('/api/quotations', { headers }).then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setQuotations(data.filter((v,i,a)=>a.findIndex(t=>t.id===v.id)===i))).catch(() => {});
     }, [token]);
@@ -1397,7 +1397,12 @@ export default function App() {
             if (cObj) customerLabel = cObj.name;
         }
 
-        const formattedDate = new Date().toLocaleString();
+        // Save a fixed "YYYY-MM-DD HH:mm:ss" (local time) instead of toLocaleString(),
+        // whose format changes with the browser language (Arabic digits, Hijri calendar).
+        // Reports and the ZATCA XML (IssueDate/IssueTime) both read this format directly.
+        const nowDate = new Date();
+        const pad2 = (n) => String(n).padStart(2, '0');
+        const formattedDate = `${nowDate.getFullYear()}-${pad2(nowDate.getMonth() + 1)}-${pad2(nowDate.getDate())} ${pad2(nowDate.getHours())}:${pad2(nowDate.getMinutes())}:${pad2(nowDate.getSeconds())}`;
 
         const postData = {
             date: formattedDate,
@@ -1857,7 +1862,7 @@ const handleB2BSubmit = () => {
         })
         .then(data => {
             setInvoices(prev => prev.map(inv => inv.id === id ? { ...inv, zatcaStatus: 'REFUNDED' } : inv));
-            fetch('/api/products')
+            fetch('/api/products', { headers })
                 .then(res => res.json())
                 .then(prods => setProducts(prods))
                 .catch(() => {});

@@ -11,7 +11,29 @@ const nodemailer = require('nodemailer');
 
 const app = express();
 const PORT = process.env.PORT || 8089;
-const JWT_SECRET = process.env.JWT_SECRET || 'kamysoft_super_secret_key_2026';
+const { getJwtSecret, getSaasAdminKey } = require('./utils/security');
+
+// Refuse to start with a missing or published login secret: anyone who knows it can
+// create a valid Admin login for any store.
+let JWT_SECRET;
+try {
+    JWT_SECRET = getJwtSecret();
+} catch (err) {
+    console.error(`[startup] ${err.message}`);
+    process.exit(1);
+}
+if (!getSaasAdminKey()) {
+    console.warn('[startup] SAAS_ADMIN_KEY is not set or is weak/published; the /admin provider API is disabled.');
+}
+
+// Demo logins (admin/admin123, ...) are only created when explicitly requested.
+const SEED_DEMO_USERS = process.env.SEED_DEMO_USERS === 'true';
+const DEMO_USERS = [
+    { id: '1', username: 'admin', password: 'admin123', role: 'Admin' },
+    { id: '2', username: 'manager', password: 'manager123', role: 'Manager' },
+    { id: '3', username: 'cashier', password: 'cashier123', role: 'Cashier' },
+    { id: '4', username: 'demo', password: 'demo123', role: 'Admin' }
+];
 
 // ----------------------------------------------------
 // EMAIL SERVICE CONFIGURATION (SMTP)
@@ -154,13 +176,10 @@ const mockDb = {
     quotations: [],
     orders: [],
     settingsTenant: {},
-    users: [
-        // Admin: admin123, Manager: manager123, Cashier: cashier123, Demo: demo123
-        { id: '1', username: 'admin', passwordHash: bcrypt.hashSync('admin123', 10), role: 'Admin' },
-        { id: '2', username: 'manager', passwordHash: bcrypt.hashSync('manager123', 10), role: 'Manager' },
-        { id: '3', username: 'cashier', passwordHash: bcrypt.hashSync('cashier123', 10), role: 'Cashier' },
-        { id: '4', username: 'demo', passwordHash: bcrypt.hashSync('demo123', 10), role: 'Admin' }
-    ],
+    // Demo logins only exist when SEED_DEMO_USERS=true (local demos / desktop first run)
+    users: SEED_DEMO_USERS
+        ? DEMO_USERS.map(u => ({ id: u.id, username: u.username, passwordHash: bcrypt.hashSync(u.password, 10), role: u.role }))
+        : [],
     products: [
         { id: '1001', nameEN: 'Premium Smart Monitor 27"', nameAR: 'شاشة ذكية فاخرة 27 بوصة', price: 950, cost: 650, stock: 12, category: 'electronics', emoji: '🖥️', barcode: '628100100010' },
         { id: '1002', nameEN: 'Wireless Laser Scanner', nameAR: 'قارئ باركود لاسلكي ليزري', price: 250, cost: 170, stock: 8, category: 'electronics', emoji: '🔦', barcode: '628100200020' },
@@ -336,7 +355,15 @@ async function seedDatabase() {
             console.log('Database seeded: Settings.');
         }
 
-        // Users — scoped to default tenant
+        // Warn about demo accounts already in the database that still use the published passwords
+        for (const demo of DEMO_USERS) {
+            const existing = await User.findOne({ username: demo.username, tenantId: 'default' });
+            if (existing && existing.isActive !== false && existing.passwordHash && bcrypt.compareSync(demo.password, existing.passwordHash)) {
+                console.warn(`[security] WARNING: user "${demo.username}" in the default store still uses the published password "${demo.password}". Change or delete this account.`);
+            }
+        }
+
+        // Users — scoped to default tenant (only when SEED_DEMO_USERS=true; mockDb.users is empty otherwise)
         for (const u of mockDb.users.filter(u => u.tenantId === 'default')) {
             const exists = await User.findOne({ username: u.username, tenantId: 'default' });
             if (!exists) {

@@ -1,4 +1,5 @@
 import React from 'react';
+import { getInvoiceDate } from '../reports/Reports';
 
 const Invoices = (props) => {
     const { 
@@ -21,11 +22,7 @@ const Invoices = (props) => {
                             inv.id.toLowerCase().includes(salesSearch.toLowerCase()) || 
                             (inv.customer && inv.customer.toLowerCase().includes(salesSearch.toLowerCase()));
                             
-                        let invDateObj = null;
-                        if (inv.date) {
-                            const datePart = inv.date.split(',')[0] || inv.date;
-                            invDateObj = new Date(datePart);
-                        }
+                        const invDateObj = getInvoiceDate(inv);
                         
                         let matchesStartDate = true;
                         if (salesStartDate && invDateObj) {

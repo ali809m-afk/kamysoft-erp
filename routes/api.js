@@ -58,26 +58,58 @@ Object.keys(defaultMockDb).forEach(key => {
     if (mockDb[key] === undefined) mockDb[key] = defaultMockDb[key];
 });
 
+const { getJwtSecret, getSaasAdminKey, safeEqual, sanitizeSettings, sanitizeSettingsUpdate } = require('../utils/security');
+
 // Middleware from server.js for auth
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
     if (token == null) return res.sendStatus(401);
-    jwt.verify(token, process.env.JWT_SECRET || 'kamysoft_super_secret_key_2026', async (err, user) => {
+    jwt.verify(token, getJwtSecret(), async (err, user) => {
         if (err) return res.status(401).json({ error: 'Session expired or invalid' });
-        
-        // Verify user still exists (prevents deleted tenants from using active tokens)
-        if (global.isMongoConnected) {
-            const userExists = await User.exists({ id: user.id });
-            if (!userExists) return res.sendStatus(401);
-        } else {
-            const userExists = user.id === 'admin1' || mockDb.users.some(u => u.id === user.id);
-            if (!userExists) return res.sendStatus(401);
+
+        // A token is only valid for the store it was issued for. Without this check a
+        // login from one store could read another store's data by changing the
+        // subdomain or the X-Tenant-Id header.
+        if (!user || user.tenantId !== getTenantId(req)) {
+            return res.status(403).json({ error: 'Tenant access mismatch' });
+        }
+        // Customer-portal tokens (role 'Tenant') are signed with the same secret but
+        // must never reach staff routes.
+        if (user.role === 'Tenant') {
+            return res.status(403).json({ error: 'Forbidden' });
+        }
+
+        try {
+            // Verify user still exists in this store (prevents deleted tenants/users from using active tokens)
+            if (global.isMongoConnected) {
+                const userExists = await User.exists({ id: user.id, tenantId: user.tenantId });
+                if (!userExists) return res.sendStatus(401);
+            } else {
+                const userExists = mockDb.users.some(u => u.id === user.id && (u.tenantId || 'default') === user.tenantId);
+                if (!userExists) return res.sendStatus(401);
+            }
+        } catch (e) {
+            return res.status(500).json({ error: 'Authentication check failed' });
         }
 
         req.user = user;
         next();
     });
+};
+
+// Returns the logged-in user for this store if a valid token was sent, otherwise null.
+// Used by routes that are public but show more to logged-in staff.
+const getOptionalUser = (req) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (!token) return null;
+    try {
+        const user = jwt.verify(token, getJwtSecret());
+        return user && user.role !== 'Tenant' && user.tenantId === getTenantId(req) ? user : null;
+    } catch (e) {
+        return null;
+    }
 };
 
 router.post('/api/auth/login', async (req, res) => {
@@ -119,7 +151,7 @@ router.post('/api/auth/login', async (req, res) => {
             // }
         }
         
-        const token = jwt.sign({ id: user.id, username: user.username, role: user.role, tenantId }, process.env.JWT_SECRET || 'kamysoft_super_secret_key_2026', { expiresIn: '12h' });
+        const token = jwt.sign({ id: user.id, username: user.username, role: user.role, tenantId }, getJwtSecret(), { expiresIn: '12h' });
         res.json({ token, user: { id: user.id, username: user.username, role: user.role, isActive: user.isActive } });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -563,6 +595,11 @@ router.get('/api/inquiries', authenticateToken, async (req, res) => {
 router.get('/api/settings', async (req, res) => {
     try {
         const tenantId = getTenantId(req);
+        // Public portals read this without logging in, so only a logged-in Admin of
+        // this store gets the secrets (ZATCA private key, SMTP password, ...).
+        const viewer = getOptionalUser(req);
+        const audience = viewer ? (viewer.role === 'Admin' ? 'admin' : 'staff') : 'public';
+        const sendSettings = (s) => res.json(sanitizeSettings(s, audience));
         if (global.isMongoConnected) {
             let settings = await Settings.findOne({ tenantId });
             if (!settings) {
@@ -572,7 +609,7 @@ router.get('/api/settings', async (req, res) => {
                     return res.status(404).json({ error: 'Store not found or deleted' });
                 }
             }
-            res.json(settings);
+            sendSettings(settings);
         } else {
             if (!mockDb.settingsTenant) {
                 mockDb.settingsTenant = { 'default': { ...mockDb.settings, tenantId: 'default' } };
@@ -584,7 +621,7 @@ router.get('/api/settings', async (req, res) => {
                     return res.status(404).json({ error: 'Store not found or deleted' });
                 }
             }
-            res.json(mockDb.settingsTenant[tenantId]);
+            sendSettings(mockDb.settingsTenant[tenantId]);
         }
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -649,19 +686,22 @@ router.post('/api/settings', authenticateToken, async (req, res) => {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
             let settings = await Settings.findOne({ tenantId });
+            // Drop license/tenant fields and keep stored secrets the client sent back empty
+            const update = sanitizeSettingsUpdate(req.body, settings);
             if (settings) {
-                Object.assign(settings, req.body);
+                Object.assign(settings, update);
                 await settings.save();
             } else {
-                settings = new Settings({ ...req.body, tenantId });
+                settings = new Settings({ ...update, tenantId });
                 await settings.save();
             }
-            res.json(settings);
+            res.json(sanitizeSettings(settings, 'admin'));
         } else {
             if (!mockDb.settingsTenant) {
                 mockDb.settingsTenant = { 'default': { ...mockDb.settings, tenantId: 'default' } };
             }
-            mockDb.settingsTenant[tenantId] = { ...mockDb.settingsTenant[tenantId], ...req.body, tenantId };
+            const update = sanitizeSettingsUpdate(req.body, mockDb.settingsTenant[tenantId]);
+            mockDb.settingsTenant[tenantId] = { ...mockDb.settingsTenant[tenantId], ...update, tenantId };
             res.json(mockDb.settingsTenant[tenantId]);
         }
     } catch (err) {
@@ -768,7 +808,7 @@ router.get('/api/themes/active', async (req, res) => {
 });
 
 // FILE UPLOAD APIs
-router.post('/api/upload/image', upload.single('file'), async (req, res) => {
+router.post('/api/upload/image', authenticateToken, upload.single('file'), async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (!req.file) {
@@ -788,7 +828,7 @@ router.post('/api/upload/image', upload.single('file'), async (req, res) => {
     }
 });
 
-router.post('/api/upload/digital-asset', upload.single('file'), async (req, res) => {
+router.post('/api/upload/digital-asset', authenticateToken, upload.single('file'), async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (!req.file) {
@@ -930,7 +970,7 @@ router.post('/api/storefront/orders', async (req, res) => {
 });
 
 // PRODUCTS / INVENTORY
-router.get('/api/products', async (req, res) => {
+router.get('/api/products', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -1007,7 +1047,7 @@ router.delete('/api/products/:id', authenticateToken, async (req, res) => {
 });
 
 // INVOICES & ZATCA PORTAL
-router.get('/api/invoices', async (req, res) => {
+router.get('/api/invoices', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -1428,7 +1468,7 @@ router.post('/api/invoices/:id/refund', authenticateToken, async (req, res) => {
 });
 
 // EXPENSES
-router.get('/api/expenses', async (req, res) => {
+router.get('/api/expenses', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -1715,7 +1755,7 @@ router.post('/api/expenses', authenticateToken, async (req, res) => {
 });
 
 // ASSETS & DEPRECIATION
-router.get('/api/assets', async (req, res) => {
+router.get('/api/assets', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -1750,7 +1790,7 @@ router.post('/api/assets', authenticateToken, async (req, res) => {
 });
 
 // PEOPLES: CUSTOMERS & EMPLOYEES & SUPPLIERS
-router.get('/api/customers', async (req, res) => {
+router.get('/api/customers', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -1765,7 +1805,7 @@ router.get('/api/customers', async (req, res) => {
     }
 });
 
-router.get('/api/employees', async (req, res) => {
+router.get('/api/employees', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -1780,7 +1820,7 @@ router.get('/api/employees', async (req, res) => {
     }
 });
 
-router.post('/api/employees', async (req, res) => {
+router.post('/api/employees', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         const { id, name, dept, position, email, phone, salary, status } = req.body;
@@ -1799,7 +1839,7 @@ router.post('/api/employees', async (req, res) => {
     }
 });
 
-router.put('/api/employees/:id', async (req, res) => {
+router.put('/api/employees/:id', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         const { name, dept, position, email, phone, salary, status } = req.body;
@@ -1822,7 +1862,7 @@ router.put('/api/employees/:id', async (req, res) => {
     }
 });
 
-router.delete('/api/employees/:id', async (req, res) => {
+router.delete('/api/employees/:id', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -1840,7 +1880,7 @@ router.delete('/api/employees/:id', async (req, res) => {
     }
 });
 
-router.get('/api/suppliers', async (req, res) => {
+router.get('/api/suppliers', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -1855,7 +1895,7 @@ router.get('/api/suppliers', async (req, res) => {
     }
 });
 
-router.get('/api/orders', async (req, res) => {
+router.get('/api/orders', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -2088,7 +2128,7 @@ router.delete('/api/users/:id', authenticateToken, async (req, res) => {
 });
 
 // QUOTATIONS CRUD
-router.get('/api/quotations', async (req, res) => {
+router.get('/api/quotations', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -2171,11 +2211,15 @@ router.put('/api/quotations/:id', authenticateToken, async (req, res) => {
 // ====================================================
 // SAAS PROVIDER ADMIN ROUTES  (protected by SAAS_ADMIN_KEY)
 // ====================================================
-const SAAS_ADMIN_KEY = process.env.SAAS_ADMIN_KEY || 'kamysoft-saas-admin-2026';
-
+// No built-in default: if SAAS_ADMIN_KEY is unset or weak, the provider admin API is disabled.
 const requireSaasAdmin = (req, res, next) => {
-    const key = req.headers['x-saas-admin-key'] || req.query.key;
-    if (!key || key !== SAAS_ADMIN_KEY) {
+    const adminKey = getSaasAdminKey();
+    if (!adminKey) {
+        return res.status(503).json({ error: 'SaaS admin API is disabled: set a strong SAAS_ADMIN_KEY (16+ characters) on the server.' });
+    }
+    // Header only: keys in the URL end up in proxy and server logs.
+    const key = req.headers['x-saas-admin-key'];
+    if (!key || !safeEqual(key, adminKey)) {
         return res.status(403).json({ error: 'Forbidden: invalid admin key' });
     }
     next();
@@ -4494,7 +4538,7 @@ router.post('/api/tenant-portal/login', async (req, res) => {
         
         const token = jwt.sign(
             { id: customer.id, role: 'Tenant', tenantId: customer.tenantId },
-            process.env.JWT_SECRET || 'kamysoft_super_secret_key_2026',
+            getJwtSecret(),
             { expiresIn: '24h' }
         );
         res.json({ token, customer: { id: customer.id, name: customer.name, phone: customer.phone } });
@@ -4506,8 +4550,8 @@ const authenticateTenant = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
     if (token == null) return res.sendStatus(401);
-    jwt.verify(token, process.env.JWT_SECRET || 'kamysoft_super_secret_key_2026', (err, user) => {
-        if (err || user.role !== 'Tenant') return res.sendStatus(403);
+    jwt.verify(token, getJwtSecret(), (err, user) => {
+        if (err || user.role !== 'Tenant' || user.tenantId !== getTenantId(req)) return res.sendStatus(403);
         req.user = user;
         next();
     });

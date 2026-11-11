@@ -1,5 +1,45 @@
 import React, { useState } from 'react';
 
+// Local calendar day as YYYY-MM-DD (toISOString() would give the UTC day,
+// which is the previous day between 00:00 and 03:00 in Saudi Arabia).
+const localDateKey = (d) => {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
+
+// Work out when an invoice was issued. The POS saves `date` with
+// toLocaleString(), so its format depends on the browser language. Arabic
+// browsers produce Arabic digits and often the Hijri calendar, e.g.
+// "٢٠‏/٥‏/١٤٤٨ هـ ١٠:٣٠:٠٠ م", which new Date() cannot parse.
+export const getInvoiceDate = (inv) => {
+    if (!inv) return null;
+    const raw = typeof inv.date === 'string' ? inv.date.trim() : '';
+
+    // 1. ISO dates (YYYY-MM-DD...) are unambiguous.
+    if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+        const d = new Date(raw.length === 10 ? `${raw}T00:00:00` : raw);
+        if (!isNaN(d.getTime())) return d;
+    }
+
+    // 2. A MongoDB ObjectId records the exact time the invoice was saved.
+    const oid = typeof inv._id === 'string' ? inv._id : inv._id && inv._id.$oid;
+    if (typeof oid === 'string' && /^[0-9a-f]{24}$/i.test(oid)) {
+        return new Date(parseInt(oid.substring(0, 8), 16) * 1000);
+    }
+
+    // 3. Last resort: normalise Arabic digits and markers, then parse.
+    if (!raw || raw.includes('هـ')) return null; // Hijri dates can't be parsed here
+    const normalised = raw
+        .replace(/[٠-٩]/g, (c) => String(c.charCodeAt(0) - 0x0660))
+        .replace(/[۰-۹]/g, (c) => String(c.charCodeAt(0) - 0x06F0))
+        .replace(/[‎‏؜]/g, '')
+        .replace(/،/g, ',')
+        .replace(/\sص$/, ' AM')
+        .replace(/\sم$/, ' PM');
+    const d = new Date(normalised);
+    return isNaN(d.getTime()) ? null : d;
+};
+
 const Reports = (props) => {
     const {
         invoices,
@@ -11,24 +51,13 @@ const Reports = (props) => {
         activeTab
     } = props;
 
-    const [selectedDate, setSelectedDate] = useState(() => {
-        const d = new Date();
-        return d.toISOString().split('T')[0];
-    });
+    const [selectedDate, setSelectedDate] = useState(() => localDateKey(new Date()));
 
     // Dedicated Daily Report View
     if (activeTab === 'dailyReport') {
         const dayInvoices = (invoices || []).filter(inv => {
-            if (!inv.date) return false;
-            // Match ISO YYYY-MM-DD or locale strings containing the date
-            if (inv.date.startsWith(selectedDate)) return true;
-            try {
-                const invD = new Date(inv.date);
-                if (!isNaN(invD.getTime())) {
-                    return invD.toISOString().split('T')[0] === selectedDate;
-                }
-            } catch (e) {}
-            return false;
+            const invD = getInvoiceDate(inv);
+            return invD ? localDateKey(invD) === selectedDate : false;
         });
 
         const totalDailySales = dayInvoices.reduce((sum, inv) => sum + (Number(inv.total) || 0), 0);
@@ -336,19 +365,11 @@ const Reports = (props) => {
     if (activeTab === 'salesMovement') {
         // Filter invoices according to the selected sub‑tab (daily / monthly / annual)
         const now = new Date();
-        const todayStr = now.toLocaleDateString();
         const currentMonth = now.getMonth();
         const currentYear = now.getFullYear();
-        const reportInvoices = invoices.filter(inv => {
-            if (!inv.date) return false;
-            const invDate = new Date(inv.date);
-            if (isNaN(invDate.getTime())) {
-                // Fallback for malformed dates – simple string checks
-                if (reportSubTab === 'daily') return inv.date.includes(todayStr);
-                if (reportSubTab === 'monthly') return inv.date.includes(`/${currentMonth + 1}/`) || inv.date.includes(`-${currentMonth + 1}-`);
-                if (reportSubTab === 'annual') return inv.date.includes(String(currentYear));
-                return false;
-            }
+        const reportInvoices = (invoices || []).filter(inv => {
+            const invDate = getInvoiceDate(inv);
+            if (!invDate) return false;
             if (reportSubTab === 'daily') return invDate.toDateString() === now.toDateString();
             if (reportSubTab === 'monthly') return invDate.getMonth() === currentMonth && invDate.getFullYear() === currentYear;
             if (reportSubTab === 'annual') return invDate.getFullYear() === currentYear;
