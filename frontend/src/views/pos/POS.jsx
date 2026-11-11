@@ -7,6 +7,7 @@ const POS = (props) => {
         addToCart, cart, removeFromCart, updateCartQty,
         activeCustomer, setActiveCustomer, customers, 
         couponInput, setCouponInput, applyCoupon, removeCoupon, activeCoupon,
+        manualDiscount, setManualDiscount, getCartDiscount,
         paymentMethod, setPaymentMethod, splitCash, setSplitCash, splitCard, setSplitCard,
         tableNum, setTableNum, serviceDuration, setServiceDuration,
         checkout, processCheckout, handleSaveQuotationFromCart,
@@ -160,27 +161,53 @@ const POS = (props) => {
                                     <span>{translations[currentLanguage].subtotal}</span>
                                     <span>{formatCurrency(cart.reduce((a, b) => a + (b.product.price * b.qty), 0))}</span>
                                 </div>
-                                <div className="total-row">
+                                {/* Manual discount: type a value and choose % of the subtotal or a fixed Riyal amount */}
+                                <div className="total-row" style={{ alignItems: 'center', gap: '8px' }}>
                                     <span>{translations[currentLanguage].discount}</span>
-                                    <span>-{formatCurrency(activeCoupon ? cart.reduce((a, b) => a + (b.product.price * b.qty), 0) * activeCoupon.rate : 0)}</span>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            max={manualDiscount.type === 'percent' ? 100 : undefined}
+                                            step="0.01"
+                                            className="form-control"
+                                            aria-label={currentLanguage === 'ar' ? 'قيمة الخصم' : 'Discount value'}
+                                            placeholder="0"
+                                            value={manualDiscount.value}
+                                            onChange={e => setManualDiscount({ ...manualDiscount, value: e.target.value })}
+                                            style={{ width: '88px', padding: '4px 6px', height: '32px', fontSize: '13px', textAlign: 'right' }}
+                                        />
+                                        <div role="group" aria-label={currentLanguage === 'ar' ? 'نوع الخصم' : 'Discount type'} style={{ display: 'flex', border: '1px solid var(--glass-border)', borderRadius: '4px', overflow: 'hidden' }}>
+                                            {[{ id: 'percent', label: '%' }, { id: 'amount', label: '⃁' }].map(opt => (
+                                                <button
+                                                    key={opt.id}
+                                                    type="button"
+                                                    aria-pressed={manualDiscount.type === opt.id}
+                                                    onClick={() => setManualDiscount({ ...manualDiscount, type: opt.id })}
+                                                    style={{ minWidth: '36px', padding: '2px 10px', height: '32px', fontSize: '14px', fontWeight: 'bold', background: manualDiscount.type === opt.id ? 'var(--accent-purple)' : 'transparent', color: manualDiscount.type === opt.id ? '#fff' : 'var(--text-secondary)' }}
+                                                >{opt.label}</button>
+                                            ))}
+                                        </div>
+                                        <span style={{ minWidth: '80px', textAlign: 'right' }}>-{formatCurrency(getCartDiscount(cart.reduce((a, b) => a + (b.product.price * b.qty), 0)))}</span>
+                                    </div>
                                 </div>
                                 <div className="total-row">
                                     <span>{translations[currentLanguage].vat}</span>
-                                    <span>{formatCurrency((cart.reduce((a, b) => a + (b.product.price * b.qty), 0) - (activeCoupon ? cart.reduce((a, b) => a + (b.product.price * b.qty), 0) * activeCoupon.rate : 0)) * (settings.taxRate / 100))}</span>
+                                    <span>{formatCurrency((cart.reduce((a, b) => a + (b.product.price * b.qty), 0) - getCartDiscount(cart.reduce((a, b) => a + (b.product.price * b.qty), 0))) * (settings.taxRate / 100))}</span>
                                 </div>
                                 <div className="total-row grand-total">
                                     <span>{translations[currentLanguage].grandTotal}</span>
-                                    <span>{formatCurrency((cart.reduce((a, b) => a + (b.product.price * b.qty), 0) - (activeCoupon ? cart.reduce((a, b) => a + (b.product.price * b.qty), 0) * activeCoupon.rate : 0)) * (1 + settings.taxRate / 100))}</span>
+                                    <span>{formatCurrency((cart.reduce((a, b) => a + (b.product.price * b.qty), 0) - getCartDiscount(cart.reduce((a, b) => a + (b.product.price * b.qty), 0))) * (1 + settings.taxRate / 100))}</span>
                                 </div>
                                 {settings.businessType === 'furniture' && cart.length > 0 && (
                                     <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px dashed var(--glass-border)', fontSize: '11px', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                                             <span>{currentLanguage === 'ar' ? 'العربون المطلوب (30%)' : 'Required Deposit (30%)'}</span>
-                                            <span style={{ color: 'var(--accent-success)', fontWeight: 'bold' }}>{formatCurrency((cart.reduce((a, b) => a + (b.product.price * b.qty), 0) - (activeCoupon ? cart.reduce((a, b) => a + (b.product.price * b.qty), 0) * activeCoupon.rate : 0)) * (1 + settings.taxRate / 100) * 0.3)}</span>
+                                            <span style={{ color: 'var(--accent-success)', fontWeight: 'bold' }}>{formatCurrency((cart.reduce((a, b) => a + (b.product.price * b.qty), 0) - getCartDiscount(cart.reduce((a, b) => a + (b.product.price * b.qty), 0))) * (1 + settings.taxRate / 100) * 0.3)}</span>
                                         </div>
                                         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                                             <span>{currentLanguage === 'ar' ? 'المبلغ المتبقي للتحصيل' : 'Remaining Balance Due'}</span>
-                                            <span style={{ color: 'var(--accent-gold)', fontWeight: 'bold' }}>{formatCurrency((cart.reduce((a, b) => a + (b.product.price * b.qty), 0) - (activeCoupon ? cart.reduce((a, b) => a + (b.product.price * b.qty), 0) * activeCoupon.rate : 0)) * (1 + settings.taxRate / 100) * 0.7)}</span>
+                                            <span style={{ color: 'var(--accent-gold)', fontWeight: 'bold' }}>{formatCurrency((cart.reduce((a, b) => a + (b.product.price * b.qty), 0) - getCartDiscount(cart.reduce((a, b) => a + (b.product.price * b.qty), 0))) * (1 + settings.taxRate / 100) * 0.7)}</span>
                                         </div>
                                     </div>
                                 )}
@@ -210,7 +237,7 @@ const POS = (props) => {
                                                 onClick={() => {
                                                     setPaymentMethod(m.id);
                                                     if (m.id === 'split') {
-                                                        const totalVal = (cart.reduce((sum, item) => sum + (item.product.price * item.qty), 0) - (activeCoupon ? cart.reduce((sum, item) => sum + (item.product.price * item.qty), 0) * activeCoupon.rate : 0)) * (1 + settings.taxRate / 100);
+                                                        const totalVal = (cart.reduce((sum, item) => sum + (item.product.price * item.qty), 0) - getCartDiscount(cart.reduce((sum, item) => sum + (item.product.price * item.qty), 0))) * (1 + settings.taxRate / 100);
                                                         setSplitCash((totalVal / 2).toFixed(2));
                                                         setSplitCard((totalVal / 2).toFixed(2));
                                                     }
@@ -245,7 +272,7 @@ const POS = (props) => {
                                                     onChange={e => {
                                                         const cash = parseFloat(e.target.value) || 0;
                                                         setSplitCash(e.target.value);
-                                                        const totalVal = (cart.reduce((sum, item) => sum + (item.product.price * item.qty), 0) - (activeCoupon ? cart.reduce((sum, item) => sum + (item.product.price * item.qty), 0) * activeCoupon.rate : 0)) * (1 + settings.taxRate / 100);
+                                                        const totalVal = (cart.reduce((sum, item) => sum + (item.product.price * item.qty), 0) - getCartDiscount(cart.reduce((sum, item) => sum + (item.product.price * item.qty), 0))) * (1 + settings.taxRate / 100);
                                                         setSplitCard((Math.max(0, totalVal - cash)).toFixed(2));
                                                     }}
                                                 />
@@ -260,7 +287,7 @@ const POS = (props) => {
                                                     onChange={e => {
                                                         const card = parseFloat(e.target.value) || 0;
                                                         setSplitCard(e.target.value);
-                                                        const totalVal = (cart.reduce((sum, item) => sum + (item.product.price * item.qty), 0) - (activeCoupon ? cart.reduce((sum, item) => sum + (item.product.price * item.qty), 0) * activeCoupon.rate : 0)) * (1 + settings.taxRate / 100);
+                                                        const totalVal = (cart.reduce((sum, item) => sum + (item.product.price * item.qty), 0) - getCartDiscount(cart.reduce((sum, item) => sum + (item.product.price * item.qty), 0))) * (1 + settings.taxRate / 100);
                                                         setSplitCash((Math.max(0, totalVal - card)).toFixed(2));
                                                     }}
                                                 />

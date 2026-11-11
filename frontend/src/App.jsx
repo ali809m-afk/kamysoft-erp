@@ -809,6 +809,8 @@ export default function App() {
     const [activeCustomer, setActiveCustomer] = useState('walk-in');
     const [couponInput, setCouponInput] = useState('');
     const [activeCoupon, setActiveCoupon] = useState(null);
+    // Cashier's manual discount in the POS: a percentage of the subtotal or a fixed amount
+    const [manualDiscount, setManualDiscount] = useState({ type: 'percent', value: '' });
     const [posFilter, setPosFilter] = useState('all');
     const [posSearch, setPosSearch] = useState('');
     const [paymentMethod, setPaymentMethod] = useState('cash');
@@ -1249,10 +1251,25 @@ export default function App() {
         }
     };
 
+    // Total cart discount before VAT: the coupon (e.g. KAMY50) plus the manual discount.
+    // A percentage applies to what is left after the coupon; the total never exceeds the subtotal.
+    const getCartDiscount = (subtotal) => {
+        const couponPart = activeCoupon ? subtotal * activeCoupon.rate : 0;
+        const value = parseFloat(manualDiscount.value);
+        let manualPart = 0;
+        if (!isNaN(value) && value > 0) {
+            manualPart = manualDiscount.type === 'percent'
+                ? (subtotal - couponPart) * Math.min(value, 100) / 100
+                : value;
+        }
+        return Math.max(0, Math.min(subtotal, Math.round((couponPart + manualPart) * 100) / 100));
+    };
+
     const loadCartFromOrder = (order) => {
         if (!order) {
             setCart([]);
             setActiveCoupon(null);
+            setManualDiscount(d => ({ ...d, value: '' }));
             return;
         }
         const mappedCart = order.items.map(item => {
@@ -1268,6 +1285,8 @@ export default function App() {
         setCart(mappedCart);
         setActiveCustomer(order.customer || 'walk-in');
         setTableNum(order.tableNumber);
+        setActiveCoupon(null);
+        setManualDiscount({ type: 'amount', value: Number(order.discount) > 0 ? String(order.discount) : '' });
     };
 
     const handleHoldTable = () => {
@@ -1289,7 +1308,7 @@ export default function App() {
             };
         });
 
-        const discount = activeCoupon ? subtotal * activeCoupon.rate : 0;
+        const discount = getCartDiscount(subtotal);
         const taxable = subtotal - discount;
         const vat = taxable * (settings.taxRate / 100);
         const grandTotal = taxable + vat;
@@ -1314,6 +1333,8 @@ export default function App() {
         .then(() => {
             alert(currentLanguage === 'ar' ? 'تم حفظ الطاولة بنجاح' : 'Table held successfully');
             setCart([]);
+            setActiveCoupon(null);
+            setManualDiscount(d => ({ ...d, value: '' }));
             setTableNum('');
             setActiveTab('tableManagement');
         })
@@ -1341,7 +1362,7 @@ export default function App() {
             };
         });
 
-        const discount = activeCoupon ? subtotal * activeCoupon.rate : 0;
+        const discount = getCartDiscount(subtotal);
         const taxable = subtotal - discount;
         const vat = taxable * (settings.taxRate / 100);
         const grandTotal = taxable + vat;
@@ -1369,6 +1390,8 @@ export default function App() {
                     if (printRes.success) {
                         alert(currentLanguage === 'ar' ? 'تم إرسال الطلب للمطبخ' : 'Order fired to kitchen');
                         setCart([]);
+                        setActiveCoupon(null);
+                        setManualDiscount(d => ({ ...d, value: '' }));
                         setTableNum('');
                         setActiveTab('tableManagement');
                     } else {
@@ -1388,7 +1411,7 @@ export default function App() {
             return { id: c.product.id, name: currentLanguage === 'ar' ? c.product.nameAR : c.product.nameEN, price: c.product.price, qty: c.qty };
         });
 
-        const discount = activeCoupon ? subtotal * activeCoupon.rate : 0;
+        const discount = getCartDiscount(subtotal);
         const taxable = subtotal - discount;
         const vat = taxable * (settings.taxRate / 100);
         const grandTotal = taxable + vat;
@@ -1438,6 +1461,7 @@ export default function App() {
             setShowInvoiceModal(true);
             setCart([]);
             setActiveCoupon(null);
+            setManualDiscount(d => ({ ...d, value: '' }));
             setCouponInput('');
 
             if (zatcaConn.autoSend) {
@@ -1470,6 +1494,7 @@ export default function App() {
             setShowInvoiceModal(true);
             setCart([]);
             setActiveCoupon(null);
+            setManualDiscount(d => ({ ...d, value: '' }));
             setCouponInput('');
 
             if (zatcaConn.autoSend) {
@@ -1651,7 +1676,7 @@ const handleB2BSubmit = () => {
             return { id: c.product.id, name: currentLanguage === 'ar' ? c.product.nameAR : c.product.nameEN, price: c.product.price, qty: c.qty };
         });
 
-        const discount = activeCoupon ? subtotal * activeCoupon.rate : 0;
+        const discount = getCartDiscount(subtotal);
         const taxable = subtotal - discount;
         const vat = taxable * (settings.taxRate / 100);
         const grandTotal = taxable + vat;
@@ -1685,6 +1710,7 @@ const handleB2BSubmit = () => {
             setShowQuotationModal(true);
             setCart([]);
             setActiveCoupon(null);
+            setManualDiscount(d => ({ ...d, value: '' }));
             setCouponInput('');
         })
         .catch(() => {
@@ -1698,6 +1724,7 @@ const handleB2BSubmit = () => {
             setShowQuotationModal(true);
             setCart([]);
             setActiveCoupon(null);
+            setManualDiscount(d => ({ ...d, value: '' }));
             setCouponInput('');
         });
     };
@@ -2426,7 +2453,7 @@ const handleB2BSubmit = () => {
         );
     }
 
-    const props = { generateZatcaQR, handleHoldTable, handleFireToKitchen, loadCartFromOrder, handleB2BAddItem, setHostname, products, settings, activeCoupon, handleLaunchApp, simulatedDomain, setQuotations, setAuthError, handleB2BItemChange, loginUsername, calculateAssetValues, handleDeleteExpense, handleSaveQuotation, handleB2BRemoveItem, simulatedTenant, setReportSubTab, handleRefundInvoice, handleRegisterSuccess, setServiceDuration, activeCustomer, setLoginPassword, setMobileMenuOpen, setZatcaConsole, zatcaSelectInvoice, setShowAssetModal, invoices, setUser, setTableNum, quotations, quotationForm, currentLanguage, showAssetQrModal, posFilter, setToken, setInvoiceSource, showCustomerModal, salesStartDate, usersList, setSplitCard, activeTab, downloadXml, setActiveInvoice, setActiveAssetForQr, setCustForm, couponInput, setInvoiceFormat, splitCash, setShowOrderModal, setPosFilter, setSalesEndDate, setShowAssetQrModal, showOrderModal, applyCoupon, handleSaveOrder, setZatcaConn, zatcaConsole, setQuotationForm, setOrderForm, handleSaveQuotationFromCart, setShowCustomerModal, handleDeleteOrder, setSimulatedDomain, setShowExpenseModal, setB2bForm, expenses, isReportingZatca, showQuotationModal, setCurrentLanguage, reportSubTab, handleSaveUser, setProducts, orders, handleSaveAsset, setSalesSearch, setEmployees, handleB2BSubmit, customers, setExpForm, orderForm, setCustomers, serviceDuration, assets, showUserModal, getBaseDomain, activeQuotation, updateCartQty, setActiveCustomer, simulateZATCAReporting, setZatcaSelectInvoice, user, setSuppliers, handleLogin, handleSaveCustomer, invoiceFormat, setCart, setPosSearch, activeAssetForQr, hostname, setActiveQuotation, custForm, splitCard, suppliers, addToCart, authError, zatcaConn, setOrders, setLoginUsername, handleDeleteCustomer, setActiveTab, handleSaveExpense, handleDeleteQuotation, setTheme, userForm, expForm, salesSearch, setSplitCash, setSalesStartDate, salesEndDate, invoiceSource, b2bForm, isAllowedTab, triggerZatcaPortalClearance, setSimulatedTenant, setShowQuotationModal, setPaymentMethod, setExpenses, setShowQuotationCrudModal, setShowInvoiceModal, processCheckout, setUsersList, setIsReportingZatca, posSearch, showInvoiceModal, setAssetForm, getPaymentMethodLabel, formatCurrency, handleLogout, setInvoices, tableNum, setSettings, cart, setActiveCoupon, mobileMenuOpen, paymentMethod, assetForm, showExpenseModal, token, employees, setShowUserModal, showAssetModal, setUserForm, loginPassword, handleDeleteUser, theme, setCouponInput, setAssets, activeInvoice, showQuotationCrudModal, translations, headers, units, setUnits };
+    const props = { generateZatcaQR, handleHoldTable, handleFireToKitchen, loadCartFromOrder, handleB2BAddItem, setHostname, products, settings, activeCoupon, manualDiscount, setManualDiscount, getCartDiscount, handleLaunchApp, simulatedDomain, setQuotations, setAuthError, handleB2BItemChange, loginUsername, calculateAssetValues, handleDeleteExpense, handleSaveQuotation, handleB2BRemoveItem, simulatedTenant, setReportSubTab, handleRefundInvoice, handleRegisterSuccess, setServiceDuration, activeCustomer, setLoginPassword, setMobileMenuOpen, setZatcaConsole, zatcaSelectInvoice, setShowAssetModal, invoices, setUser, setTableNum, quotations, quotationForm, currentLanguage, showAssetQrModal, posFilter, setToken, setInvoiceSource, showCustomerModal, salesStartDate, usersList, setSplitCard, activeTab, downloadXml, setActiveInvoice, setActiveAssetForQr, setCustForm, couponInput, setInvoiceFormat, splitCash, setShowOrderModal, setPosFilter, setSalesEndDate, setShowAssetQrModal, showOrderModal, applyCoupon, handleSaveOrder, setZatcaConn, zatcaConsole, setQuotationForm, setOrderForm, handleSaveQuotationFromCart, setShowCustomerModal, handleDeleteOrder, setSimulatedDomain, setShowExpenseModal, setB2bForm, expenses, isReportingZatca, showQuotationModal, setCurrentLanguage, reportSubTab, handleSaveUser, setProducts, orders, handleSaveAsset, setSalesSearch, setEmployees, handleB2BSubmit, customers, setExpForm, orderForm, setCustomers, serviceDuration, assets, showUserModal, getBaseDomain, activeQuotation, updateCartQty, setActiveCustomer, simulateZATCAReporting, setZatcaSelectInvoice, user, setSuppliers, handleLogin, handleSaveCustomer, invoiceFormat, setCart, setPosSearch, activeAssetForQr, hostname, setActiveQuotation, custForm, splitCard, suppliers, addToCart, authError, zatcaConn, setOrders, setLoginUsername, handleDeleteCustomer, setActiveTab, handleSaveExpense, handleDeleteQuotation, setTheme, userForm, expForm, salesSearch, setSplitCash, setSalesStartDate, salesEndDate, invoiceSource, b2bForm, isAllowedTab, triggerZatcaPortalClearance, setSimulatedTenant, setShowQuotationModal, setPaymentMethod, setExpenses, setShowQuotationCrudModal, setShowInvoiceModal, processCheckout, setUsersList, setIsReportingZatca, posSearch, showInvoiceModal, setAssetForm, getPaymentMethodLabel, formatCurrency, handleLogout, setInvoices, tableNum, setSettings, cart, setActiveCoupon, mobileMenuOpen, paymentMethod, assetForm, showExpenseModal, token, employees, setShowUserModal, showAssetModal, setUserForm, loginPassword, handleDeleteUser, theme, setCouponInput, setAssets, activeInvoice, showQuotationCrudModal, translations, headers, units, setUnits };
 
     const b2bProductOptions = products.map(p => (
         <option key={p.id} value={p.id}>{currentLanguage === 'ar' ? p.nameAR : p.nameEN}</option>
