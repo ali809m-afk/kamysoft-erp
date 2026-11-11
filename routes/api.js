@@ -58,26 +58,58 @@ Object.keys(defaultMockDb).forEach(key => {
     if (mockDb[key] === undefined) mockDb[key] = defaultMockDb[key];
 });
 
+const { getJwtSecret, getSaasAdminKey, safeEqual, sanitizeSettings, sanitizeSettingsUpdate } = require('../utils/security');
+
 // Middleware from server.js for auth
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
     if (token == null) return res.sendStatus(401);
-    jwt.verify(token, process.env.JWT_SECRET || 'kamysoft_super_secret_key_2026', async (err, user) => {
+    jwt.verify(token, getJwtSecret(), async (err, user) => {
         if (err) return res.status(401).json({ error: 'Session expired or invalid' });
-        
-        // Verify user still exists (prevents deleted tenants from using active tokens)
-        if (global.isMongoConnected) {
-            const userExists = await User.exists({ id: user.id });
-            if (!userExists) return res.sendStatus(401);
-        } else {
-            const userExists = user.id === 'admin1' || mockDb.users.some(u => u.id === user.id);
-            if (!userExists) return res.sendStatus(401);
+
+        // A token is only valid for the store it was issued for. Without this check a
+        // login from one store could read another store's data by changing the
+        // subdomain or the X-Tenant-Id header.
+        if (!user || user.tenantId !== getTenantId(req)) {
+            return res.status(403).json({ error: 'Tenant access mismatch' });
+        }
+        // Customer-portal tokens (role 'Tenant') are signed with the same secret but
+        // must never reach staff routes.
+        if (user.role === 'Tenant') {
+            return res.status(403).json({ error: 'Forbidden' });
+        }
+
+        try {
+            // Verify user still exists in this store (prevents deleted tenants/users from using active tokens)
+            if (global.isMongoConnected) {
+                const userExists = await User.exists({ id: user.id, tenantId: user.tenantId });
+                if (!userExists) return res.sendStatus(401);
+            } else {
+                const userExists = mockDb.users.some(u => u.id === user.id && (u.tenantId || 'default') === user.tenantId);
+                if (!userExists) return res.sendStatus(401);
+            }
+        } catch (e) {
+            return res.status(500).json({ error: 'Authentication check failed' });
         }
 
         req.user = user;
         next();
     });
+};
+
+// Returns the logged-in user for this store if a valid token was sent, otherwise null.
+// Used by routes that are public but show more to logged-in staff.
+const getOptionalUser = (req) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (!token) return null;
+    try {
+        const user = jwt.verify(token, getJwtSecret());
+        return user && user.role !== 'Tenant' && user.tenantId === getTenantId(req) ? user : null;
+    } catch (e) {
+        return null;
+    }
 };
 
 router.post('/api/auth/login', async (req, res) => {
@@ -119,7 +151,7 @@ router.post('/api/auth/login', async (req, res) => {
             // }
         }
         
-        const token = jwt.sign({ id: user.id, username: user.username, role: user.role, tenantId }, process.env.JWT_SECRET || 'kamysoft_super_secret_key_2026', { expiresIn: '12h' });
+        const token = jwt.sign({ id: user.id, username: user.username, role: user.role, tenantId }, getJwtSecret(), { expiresIn: '12h' });
         res.json({ token, user: { id: user.id, username: user.username, role: user.role, isActive: user.isActive } });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -238,22 +270,24 @@ router.post('/api/auth/register-tenant', async (req, res) => {
             return res.status(400).json({ error: 'Invalid subdomain format' });
         }
         
-        // Clean up any orphaned data from a previous failed registration attempt for this tenantId
-        if (global.isMongoConnected) {
-            await Promise.all([
-                User.deleteMany({ tenantId: normalizedTenantId }),
-                Product.deleteMany({ tenantId: normalizedTenantId }),
-                Account.deleteMany({ tenantId: normalizedTenantId }),
-                Settings.deleteOne({ tenantId: normalizedTenantId })
-            ]);
+        // Check uniqueness of tenantId FIRST. The orphan clean-up below used to run before
+        // this check, so signing up with an existing store's subdomain deleted that store's
+        // users, products, accounts and settings.
+        const reservedTenantIds = ['default', 'www', 'demo', 'admin', 'api'];
+        if (reservedTenantIds.includes(normalizedTenantId)) {
+            return res.status(400).json({ error: 'Store subdomain is already registered' });
         }
-        
-        // Check uniqueness of tenantId
         if (global.isMongoConnected) {
             const existingSettings = await Settings.findOne({ tenantId: normalizedTenantId });
             if (existingSettings) {
                 return res.status(400).json({ error: 'Store subdomain is already registered' });
             }
+            // No store owns this subdomain: remove leftovers of an earlier failed sign-up
+            await Promise.all([
+                User.deleteMany({ tenantId: normalizedTenantId }),
+                Product.deleteMany({ tenantId: normalizedTenantId }),
+                Account.deleteMany({ tenantId: normalizedTenantId })
+            ]);
         } else {
             if (mockDb.settingsTenant && mockDb.settingsTenant[normalizedTenantId]) {
                 return res.status(400).json({ error: 'Store subdomain is already registered' });
@@ -563,6 +597,11 @@ router.get('/api/inquiries', authenticateToken, async (req, res) => {
 router.get('/api/settings', async (req, res) => {
     try {
         const tenantId = getTenantId(req);
+        // Public portals read this without logging in, so only a logged-in Admin of
+        // this store gets the secrets (ZATCA private key, SMTP password, ...).
+        const viewer = getOptionalUser(req);
+        const audience = viewer ? (viewer.role === 'Admin' ? 'admin' : 'staff') : 'public';
+        const sendSettings = (s) => res.json(sanitizeSettings(s, audience));
         if (global.isMongoConnected) {
             let settings = await Settings.findOne({ tenantId });
             if (!settings) {
@@ -572,7 +611,7 @@ router.get('/api/settings', async (req, res) => {
                     return res.status(404).json({ error: 'Store not found or deleted' });
                 }
             }
-            res.json(settings);
+            sendSettings(settings);
         } else {
             if (!mockDb.settingsTenant) {
                 mockDb.settingsTenant = { 'default': { ...mockDb.settings, tenantId: 'default' } };
@@ -584,7 +623,7 @@ router.get('/api/settings', async (req, res) => {
                     return res.status(404).json({ error: 'Store not found or deleted' });
                 }
             }
-            res.json(mockDb.settingsTenant[tenantId]);
+            sendSettings(mockDb.settingsTenant[tenantId]);
         }
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -649,19 +688,22 @@ router.post('/api/settings', authenticateToken, async (req, res) => {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
             let settings = await Settings.findOne({ tenantId });
+            // Drop license/tenant fields and keep stored secrets the client sent back empty
+            const update = sanitizeSettingsUpdate(req.body, settings);
             if (settings) {
-                Object.assign(settings, req.body);
+                Object.assign(settings, update);
                 await settings.save();
             } else {
-                settings = new Settings({ ...req.body, tenantId });
+                settings = new Settings({ ...update, tenantId });
                 await settings.save();
             }
-            res.json(settings);
+            res.json(sanitizeSettings(settings, 'admin'));
         } else {
             if (!mockDb.settingsTenant) {
                 mockDb.settingsTenant = { 'default': { ...mockDb.settings, tenantId: 'default' } };
             }
-            mockDb.settingsTenant[tenantId] = { ...mockDb.settingsTenant[tenantId], ...req.body, tenantId };
+            const update = sanitizeSettingsUpdate(req.body, mockDb.settingsTenant[tenantId]);
+            mockDb.settingsTenant[tenantId] = { ...mockDb.settingsTenant[tenantId], ...update, tenantId };
             res.json(mockDb.settingsTenant[tenantId]);
         }
     } catch (err) {
@@ -768,7 +810,7 @@ router.get('/api/themes/active', async (req, res) => {
 });
 
 // FILE UPLOAD APIs
-router.post('/api/upload/image', upload.single('file'), async (req, res) => {
+router.post('/api/upload/image', authenticateToken, upload.single('file'), async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (!req.file) {
@@ -788,7 +830,7 @@ router.post('/api/upload/image', upload.single('file'), async (req, res) => {
     }
 });
 
-router.post('/api/upload/digital-asset', upload.single('file'), async (req, res) => {
+router.post('/api/upload/digital-asset', authenticateToken, upload.single('file'), async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (!req.file) {
@@ -809,16 +851,26 @@ router.post('/api/upload/digital-asset', upload.single('file'), async (req, res)
 });
 
 // STOREFRONT APIs (Publicly accessible but scoped to tenant)
+// Public product list (store home page and online store). Cost price, stock count and
+// digital download links are never sent to visitors.
+const toPublicProduct = (p) => {
+    const o = typeof p.toObject === 'function' ? p.toObject() : p;
+    return {
+        id: o.id, nameEN: o.nameEN, nameAR: o.nameAR, price: o.price,
+        category: o.category, emoji: o.emoji, barcode: o.barcode,
+        image: o.image || o.imageUrl || '',
+        isDigital: !!o.isDigital, variants: o.variants || [],
+        inStock: o.isDigital ? true : Number(o.stock) > 0
+    };
+};
+
 router.get('/api/storefront/products', async (req, res) => {
     try {
         const tenantId = getTenantId(req);
-        if (global.isMongoConnected) {
-            const products = await Product.find({ tenantId });
-            res.json(products);
-        } else {
-            const products = mockDb.products.filter(p => p.tenantId === tenantId);
-            res.json(products);
-        }
+        const products = global.isMongoConnected
+            ? await Product.find({ tenantId }).lean()
+            : mockDb.products.filter(p => p.tenantId === tenantId);
+        res.json(products.map(toPublicProduct));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -856,8 +908,16 @@ router.post('/api/storefront/orders', async (req, res) => {
             mockDb.orders.push(newOrder);
         }
 
-        // Process digital assets delivery
-        const digitalItems = items.filter(i => i.isDigital);
+        // Process digital assets delivery. The download link comes from this store's own
+        // product record, never from the request: the shopper's browser used to send
+        // digitalAssetUrl itself, so any storage key could be requested and emailed.
+        const requestedIds = [...new Set(items.map(i => String((i && (i.id || i.productId)) || '')).filter(Boolean))];
+        const storeProducts = global.isMongoConnected
+            ? await Product.find({ tenantId, id: { $in: requestedIds } }).lean()
+            : mockDb.products.filter(p => p.tenantId === tenantId && requestedIds.includes(String(p.id)));
+        const digitalItems = storeProducts
+            .filter(p => p.isDigital && p.digitalAssetUrl)
+            .map(p => ({ nameEN: p.nameEN, name: p.nameEN, digitalAssetUrl: p.digitalAssetUrl, digitalAssetInstructions: p.digitalAssetInstructions }));
         if (digitalItems.length > 0 && email) {
             let linksHtml = '<ul>';
             
@@ -930,7 +990,7 @@ router.post('/api/storefront/orders', async (req, res) => {
 });
 
 // PRODUCTS / INVENTORY
-router.get('/api/products', async (req, res) => {
+router.get('/api/products', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -1007,7 +1067,7 @@ router.delete('/api/products/:id', authenticateToken, async (req, res) => {
 });
 
 // INVOICES & ZATCA PORTAL
-router.get('/api/invoices', async (req, res) => {
+router.get('/api/invoices', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -1021,6 +1081,40 @@ router.get('/api/invoices', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+
+// --- ZATCA mode -------------------------------------------------------------
+// 'connected'     : invoices are signed (Phase 2 XML, hash chain, full QR) and can be reported.
+// 'not_connected' : no signing or reporting; invoices get the basic simplified-invoice QR
+//                   (seller, VAT number, time, total, VAT) and status NOT_CONNECTED.
+const isZatcaConnected = (settings) => ((settings && settings.zatcaConn && settings.zatcaConn.mode) || 'connected') === 'connected';
+
+// Basic ZATCA QR (TLV tags 1-5), base64
+function buildBasicZatcaQr(settings, invoice) {
+    const tlv = (tag, value) => {
+        const v = Buffer.from(String(value ?? ''), 'utf8');
+        const len = v.length < 128 ? Buffer.from([v.length]) : v.length < 256 ? Buffer.from([0x81, v.length]) : Buffer.from([0x82, (v.length >> 8) & 0xff, v.length & 0xff]);
+        return Buffer.concat([Buffer.from([tag]), len, v]);
+    };
+    const raw = String(invoice.date || '').trim();
+    const m = raw.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2})?)/);
+    const timestamp = m ? `${m[1]}T${m[2].length === 5 ? m[2] + ':00' : m[2]}` : new Date().toISOString().slice(0, 19);
+    return Buffer.concat([
+        tlv(1, settings.businessName || ''),
+        tlv(2, settings.vatNumber || ''),
+        tlv(3, timestamp),
+        tlv(4, Number(invoice.total || 0).toFixed(2)),
+        tlv(5, Number(invoice.vat || 0).toFixed(2))
+    ]).toString('base64');
+}
+
+function applyNotConnectedZatca(invoice, settings) {
+    // Not part of the signed invoice chain (the next signed invoice links to the last signed one)
+    invoice.pih = 'NOT_CONNECTED';
+    invoice.qrCode = buildBasicZatcaQr(settings, invoice);
+    invoice.xml = undefined; invoice.xmlHash = undefined; invoice.xmlHashBase64 = undefined;
+    invoice.signature = undefined; invoice.publicKey = undefined; invoice.certSignature = undefined;
+    if (!invoice.zatcaStatus || invoice.zatcaStatus === 'PENDING') invoice.zatcaStatus = 'NOT_CONNECTED';
+}
 
 router.post('/api/invoices', authenticateToken, async (req, res) => {
     const invoice = req.body;
@@ -1036,8 +1130,9 @@ router.post('/api/invoices', authenticateToken, async (req, res) => {
             const count = await Invoice.countDocuments({ tenantId });
             invoice.csn = count + 1;
 
+            // Previous invoice hash = last *signed* invoice (invoices made in Not connected mode have none)
             let pih = zatcaCrypto.DEFAULT_COMPLIANCE_PREVIOUS_INVOICE_HASH;
-            const lastInvs = await Invoice.find({ tenantId }).sort({ csn: -1 }).limit(1);
+            const lastInvs = await Invoice.find({ tenantId, xmlHashBase64: { $exists: true, $nin: [null, ''] } }).sort({ csn: -1 }).limit(1);
             if (lastInvs.length > 0 && lastInvs[0].xmlHashBase64) {
                 pih = lastInvs[0].xmlHashBase64;
             }
@@ -1046,32 +1141,36 @@ router.post('/api/invoices', authenticateToken, async (req, res) => {
             let settings = await Settings.findOne({ tenantId });
             if (!settings) settings = mockDb.settings;
 
-            const keys = zatcaCrypto.getKeys(tenantId) || zatcaCrypto.onboardDevice(tenantId, {
-                organizationNameAr: settings.businessName,
-                organizationNameEn: settings.businessName,
-                vatNumber: settings.vatNumber,
-                crNumber: settings.crNumber
-            }, settings?.zatcaConn?.env || 'sandbox');
+            if (!isZatcaConnected(settings)) {
+                applyNotConnectedZatca(invoice, settings);
+            } else {
+                const keys = zatcaCrypto.getKeys(tenantId) || zatcaCrypto.onboardDevice(tenantId, {
+                    organizationNameAr: settings.businessName,
+                    organizationNameEn: settings.businessName,
+                    vatNumber: settings.vatNumber,
+                    crNumber: settings.crNumber
+                }, settings?.zatcaConn?.env || 'sandbox');
 
-            const privKey = settings?.zatcaConn?.privateKey || keys.privateKeyPem;
-            const certPem = settings?.zatcaConn?.clientId || keys.certificatePem;
+                const privKey = settings?.zatcaConn?.privateKey || keys.privateKeyPem;
+                const certPem = settings?.zatcaConn?.clientId || keys.certificatePem;
 
-            const unsignedXml = zatcaCrypto.generateZATCAXML(invoice, settings);
-            const signed = zatcaCrypto.signInvoice({
-                xml: unsignedXml,
-                privateKeyPem: privKey,
-                certificatePem: certPem
-            });
+                const unsignedXml = zatcaCrypto.generateZATCAXML(invoice, settings);
+                const signed = zatcaCrypto.signInvoice({
+                    xml: unsignedXml,
+                    privateKeyPem: privKey,
+                    certificatePem: certPem
+                });
 
-            invoice.xml = signed.signedXml;
-            invoice.xmlHash = signed.xmlHashHex;
-            invoice.xmlHashBase64 = signed.xmlHashBase64;
-            invoice.signature = signed.signatureHex;
-            invoice.publicKey = signed.publicKeyBase64;
-            invoice.certSignature = signed.certificateSignature;
-            invoice.qrCode = signed.qrCodeBase64;
-            if (!invoice.zatcaStatus) {
-                invoice.zatcaStatus = 'PENDING';
+                invoice.xml = signed.signedXml;
+                invoice.xmlHash = signed.xmlHashHex;
+                invoice.xmlHashBase64 = signed.xmlHashBase64;
+                invoice.signature = signed.signatureHex;
+                invoice.publicKey = signed.publicKeyBase64;
+                invoice.certSignature = signed.certificateSignature;
+                invoice.qrCode = signed.qrCodeBase64;
+                if (!invoice.zatcaStatus) {
+                    invoice.zatcaStatus = 'PENDING';
+                }
             }
 
             const newInvoice = new Invoice(invoice);
@@ -1091,40 +1190,43 @@ router.post('/api/invoices', authenticateToken, async (req, res) => {
             const tenantInvs = mockDb.invoices.filter(i => i.tenantId === tenantId);
             invoice.csn = tenantInvs.length + 1;
 
+            // Previous invoice hash = last *signed* invoice (invoices made in Not connected mode have none)
             let pih = zatcaCrypto.DEFAULT_COMPLIANCE_PREVIOUS_INVOICE_HASH;
-            if (tenantInvs.length > 0) {
-                const prev = tenantInvs[tenantInvs.length - 1];
-                if (prev.xmlHashBase64) pih = prev.xmlHashBase64;
-            }
+            const signedInvs = tenantInvs.filter(i => i.xmlHashBase64);
+            if (signedInvs.length > 0) pih = signedInvs[signedInvs.length - 1].xmlHashBase64;
             invoice.pih = pih;
 
             const settings = (mockDb.settingsTenant && mockDb.settingsTenant[tenantId]) || mockDb.settings;
-            const keys = zatcaCrypto.getKeys(tenantId) || zatcaCrypto.onboardDevice(tenantId, {
-                organizationNameAr: settings.businessName,
-                organizationNameEn: settings.businessName,
-                vatNumber: settings.vatNumber,
-                crNumber: settings.crNumber
-            }, settings?.zatcaConn?.env || 'sandbox');
+            if (!isZatcaConnected(settings)) {
+                applyNotConnectedZatca(invoice, settings);
+            } else {
+                const keys = zatcaCrypto.getKeys(tenantId) || zatcaCrypto.onboardDevice(tenantId, {
+                    organizationNameAr: settings.businessName,
+                    organizationNameEn: settings.businessName,
+                    vatNumber: settings.vatNumber,
+                    crNumber: settings.crNumber
+                }, settings?.zatcaConn?.env || 'sandbox');
 
-            const privKey = settings?.zatcaConn?.privateKey || keys.privateKeyPem;
-            const certPem = settings?.zatcaConn?.clientId || keys.certificatePem;
+                const privKey = settings?.zatcaConn?.privateKey || keys.privateKeyPem;
+                const certPem = settings?.zatcaConn?.clientId || keys.certificatePem;
 
-            const unsignedXml = zatcaCrypto.generateZATCAXML(invoice, settings);
-            const signed = zatcaCrypto.signInvoice({
-                xml: unsignedXml,
-                privateKeyPem: privKey,
-                certificatePem: certPem
-            });
+                const unsignedXml = zatcaCrypto.generateZATCAXML(invoice, settings);
+                const signed = zatcaCrypto.signInvoice({
+                    xml: unsignedXml,
+                    privateKeyPem: privKey,
+                    certificatePem: certPem
+                });
 
-            invoice.xml = signed.signedXml;
-            invoice.xmlHash = signed.xmlHashHex;
-            invoice.xmlHashBase64 = signed.xmlHashBase64;
-            invoice.signature = signed.signatureHex;
-            invoice.publicKey = signed.publicKeyBase64;
-            invoice.certSignature = signed.certificateSignature;
-            invoice.qrCode = signed.qrCodeBase64;
-            if (!invoice.zatcaStatus) {
-                invoice.zatcaStatus = 'PENDING';
+                invoice.xml = signed.signedXml;
+                invoice.xmlHash = signed.xmlHashHex;
+                invoice.xmlHashBase64 = signed.xmlHashBase64;
+                invoice.signature = signed.signatureHex;
+                invoice.publicKey = signed.publicKeyBase64;
+                invoice.certSignature = signed.certificateSignature;
+                invoice.qrCode = signed.qrCodeBase64;
+                if (!invoice.zatcaStatus) {
+                    invoice.zatcaStatus = 'PENDING';
+                }
             }
 
             mockDb.invoices.push(invoice);
@@ -1260,6 +1362,9 @@ router.post('/api/invoices/:id/zatca-report', authenticateToken, async (req, res
 
         if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
         if (!settings) settings = mockDb.settings;
+        if (!isZatcaConnected(settings)) {
+            return res.status(400).json({ error: 'ZATCA is set to Not connected (Settings > ZATCA). Switch to Connected to report invoices.', zatcaStatus: invoice.zatcaStatus });
+        }
 
         // Load or auto-provision tenant cryptographic keys & CSID
         let localKeys = zatcaCrypto.getKeys(tenantId);
@@ -1368,17 +1473,21 @@ router.post('/api/invoices/:id/refund', authenticateToken, async (req, res) => {
             invoice.invoiceTypeCode = '381'; // ZATCA Credit Note (BR-KSA-17)
             invoice.originalInvoiceId = invoice.id;
 
-            const creditXml = zatcaCrypto.generateZATCAXML(invoice, settings);
-            const signedCredit = zatcaCrypto.signInvoice({
-                xml: creditXml,
-                privateKeyPem: settings?.zatcaConn?.privateKey || localKeys.privateKeyPem,
-                certificatePem: settings?.zatcaConn?.clientId || localKeys.certificatePem
-            });
-            invoice.xml = signedCredit.signedXml;
-            invoice.xmlHash = signedCredit.xmlHashHex;
-            invoice.xmlHashBase64 = signedCredit.xmlHashBase64;
-            invoice.signature = signedCredit.signatureHex;
-            invoice.qrCode = signedCredit.qrCodeBase64;
+            if (!isZatcaConnected(settings)) {
+                invoice.qrCode = buildBasicZatcaQr(settings, invoice);
+            } else {
+                const creditXml = zatcaCrypto.generateZATCAXML(invoice, settings);
+                const signedCredit = zatcaCrypto.signInvoice({
+                    xml: creditXml,
+                    privateKeyPem: settings?.zatcaConn?.privateKey || localKeys.privateKeyPem,
+                    certificatePem: settings?.zatcaConn?.clientId || localKeys.certificatePem
+                });
+                invoice.xml = signedCredit.signedXml;
+                invoice.xmlHash = signedCredit.xmlHashHex;
+                invoice.xmlHashBase64 = signedCredit.xmlHashBase64;
+                invoice.signature = signedCredit.signatureHex;
+                invoice.qrCode = signedCredit.qrCodeBase64;
+            }
 
             await invoice.save();
 
@@ -1403,17 +1512,21 @@ router.post('/api/invoices/:id/refund', authenticateToken, async (req, res) => {
             invoice.invoiceTypeCode = '381'; // ZATCA Credit Note
             invoice.originalInvoiceId = invoice.id;
 
-            const creditXml = zatcaCrypto.generateZATCAXML(invoice, settings);
-            const signedCredit = zatcaCrypto.signInvoice({
-                xml: creditXml,
-                privateKeyPem: settings?.zatcaConn?.privateKey || localKeys.privateKeyPem,
-                certificatePem: settings?.zatcaConn?.clientId || localKeys.certificatePem
-            });
-            invoice.xml = signedCredit.signedXml;
-            invoice.xmlHash = signedCredit.xmlHashHex;
-            invoice.xmlHashBase64 = signedCredit.xmlHashBase64;
-            invoice.signature = signedCredit.signatureHex;
-            invoice.qrCode = signedCredit.qrCodeBase64;
+            if (!isZatcaConnected(settings)) {
+                invoice.qrCode = buildBasicZatcaQr(settings, invoice);
+            } else {
+                const creditXml = zatcaCrypto.generateZATCAXML(invoice, settings);
+                const signedCredit = zatcaCrypto.signInvoice({
+                    xml: creditXml,
+                    privateKeyPem: settings?.zatcaConn?.privateKey || localKeys.privateKeyPem,
+                    certificatePem: settings?.zatcaConn?.clientId || localKeys.certificatePem
+                });
+                invoice.xml = signedCredit.signedXml;
+                invoice.xmlHash = signedCredit.xmlHashHex;
+                invoice.xmlHashBase64 = signedCredit.xmlHashBase64;
+                invoice.signature = signedCredit.signatureHex;
+                invoice.qrCode = signedCredit.qrCodeBase64;
+            }
 
             // Restore stock
             (invoice.items || []).forEach(item => {
@@ -1428,7 +1541,7 @@ router.post('/api/invoices/:id/refund', authenticateToken, async (req, res) => {
 });
 
 // EXPENSES
-router.get('/api/expenses', async (req, res) => {
+router.get('/api/expenses', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -1715,7 +1828,7 @@ router.post('/api/expenses', authenticateToken, async (req, res) => {
 });
 
 // ASSETS & DEPRECIATION
-router.get('/api/assets', async (req, res) => {
+router.get('/api/assets', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -1750,7 +1863,7 @@ router.post('/api/assets', authenticateToken, async (req, res) => {
 });
 
 // PEOPLES: CUSTOMERS & EMPLOYEES & SUPPLIERS
-router.get('/api/customers', async (req, res) => {
+router.get('/api/customers', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -1765,7 +1878,7 @@ router.get('/api/customers', async (req, res) => {
     }
 });
 
-router.get('/api/employees', async (req, res) => {
+router.get('/api/employees', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -1780,7 +1893,7 @@ router.get('/api/employees', async (req, res) => {
     }
 });
 
-router.post('/api/employees', async (req, res) => {
+router.post('/api/employees', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         const { id, name, dept, position, email, phone, salary, status } = req.body;
@@ -1799,7 +1912,7 @@ router.post('/api/employees', async (req, res) => {
     }
 });
 
-router.put('/api/employees/:id', async (req, res) => {
+router.put('/api/employees/:id', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         const { name, dept, position, email, phone, salary, status } = req.body;
@@ -1822,7 +1935,7 @@ router.put('/api/employees/:id', async (req, res) => {
     }
 });
 
-router.delete('/api/employees/:id', async (req, res) => {
+router.delete('/api/employees/:id', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -1840,7 +1953,7 @@ router.delete('/api/employees/:id', async (req, res) => {
     }
 });
 
-router.get('/api/suppliers', async (req, res) => {
+router.get('/api/suppliers', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -1855,7 +1968,7 @@ router.get('/api/suppliers', async (req, res) => {
     }
 });
 
-router.get('/api/orders', async (req, res) => {
+router.get('/api/orders', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -2088,7 +2201,7 @@ router.delete('/api/users/:id', authenticateToken, async (req, res) => {
 });
 
 // QUOTATIONS CRUD
-router.get('/api/quotations', async (req, res) => {
+router.get('/api/quotations', authenticateToken, async (req, res) => {
     try {
         const tenantId = getTenantId(req);
         if (global.isMongoConnected) {
@@ -2171,11 +2284,15 @@ router.put('/api/quotations/:id', authenticateToken, async (req, res) => {
 // ====================================================
 // SAAS PROVIDER ADMIN ROUTES  (protected by SAAS_ADMIN_KEY)
 // ====================================================
-const SAAS_ADMIN_KEY = process.env.SAAS_ADMIN_KEY || 'kamysoft-saas-admin-2026';
-
+// No built-in default: if SAAS_ADMIN_KEY is unset or weak, the provider admin API is disabled.
 const requireSaasAdmin = (req, res, next) => {
-    const key = req.headers['x-saas-admin-key'] || req.query.key;
-    if (!key || key !== SAAS_ADMIN_KEY) {
+    const adminKey = getSaasAdminKey();
+    if (!adminKey) {
+        return res.status(503).json({ error: 'SaaS admin API is disabled: set a strong SAAS_ADMIN_KEY (16+ characters) on the server.' });
+    }
+    // Header only: keys in the URL end up in proxy and server logs.
+    const key = req.headers['x-saas-admin-key'];
+    if (!key || !safeEqual(key, adminKey)) {
         return res.status(403).json({ error: 'Forbidden: invalid admin key' });
     }
     next();
@@ -4494,7 +4611,7 @@ router.post('/api/tenant-portal/login', async (req, res) => {
         
         const token = jwt.sign(
             { id: customer.id, role: 'Tenant', tenantId: customer.tenantId },
-            process.env.JWT_SECRET || 'kamysoft_super_secret_key_2026',
+            getJwtSecret(),
             { expiresIn: '24h' }
         );
         res.json({ token, customer: { id: customer.id, name: customer.name, phone: customer.phone } });
@@ -4506,8 +4623,8 @@ const authenticateTenant = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
     if (token == null) return res.sendStatus(401);
-    jwt.verify(token, process.env.JWT_SECRET || 'kamysoft_super_secret_key_2026', (err, user) => {
-        if (err || user.role !== 'Tenant') return res.sendStatus(403);
+    jwt.verify(token, getJwtSecret(), (err, user) => {
+        if (err || user.role !== 'Tenant' || user.tenantId !== getTenantId(req)) return res.sendStatus(403);
         req.user = user;
         next();
     });
@@ -4694,35 +4811,139 @@ router.post('/api/leads/:id/convert', authenticateToken, async (req, res) => {
 // RESTAURANT MODULE ENDPOINTS
 // ==========================================
 
+// --- Storage: MongoDB when connected, otherwise the in-memory store (portable/demo mode).
+// Both paths work on plain objects so the routes below have one code path.
+if (!mockDb.printerConfigs) mockDb.printerConfigs = [];
+if (!mockDb.restaurantOrders) mockDb.restaurantOrders = [];
+
+const restaurantStore = {
+    async listPrinters(tenantId) {
+        if (global.isMongoConnected) return PrinterConfig.find({ tenantId }).lean();
+        return mockDb.printerConfigs.filter(p => p.tenantId === tenantId);
+    },
+    async savePrinter(tenantId, data) {
+        if (global.isMongoConnected) {
+            await PrinterConfig.findOneAndUpdate({ category: data.category, tenantId }, { ...data, tenantId }, { upsert: true });
+            return;
+        }
+        const idx = mockDb.printerConfigs.findIndex(p => p.tenantId === tenantId && p.category === data.category);
+        const row = { ...data, tenantId };
+        if (idx >= 0) mockDb.printerConfigs[idx] = row; else mockDb.printerConfigs.push(row);
+    },
+    async deletePrinter(tenantId, category) {
+        if (global.isMongoConnected) return PrinterConfig.findOneAndDelete({ category, tenantId });
+        mockDb.printerConfigs = mockDb.printerConfigs.filter(p => !(p.tenantId === tenantId && p.category === category));
+    },
+    async listOpenOrders(tenantId) {
+        if (global.isMongoConnected) return RestaurantOrder.find({ status: 'Open', tenantId }).lean();
+        return mockDb.restaurantOrders.filter(o => o.tenantId === tenantId && o.status === 'Open');
+    },
+    async getOrder(tenantId, id) {
+        if (global.isMongoConnected) return RestaurantOrder.findOne({ id, tenantId }).lean();
+        return mockDb.restaurantOrders.find(o => o.tenantId === tenantId && o.id === id) || null;
+    },
+    async findOpenOrderByTable(tenantId, tableNumber) {
+        if (global.isMongoConnected) return RestaurantOrder.findOne({ tableNumber, status: 'Open', tenantId }).lean();
+        return mockDb.restaurantOrders.find(o => o.tenantId === tenantId && o.status === 'Open' && o.tableNumber === tableNumber) || null;
+    },
+    async saveOrder(tenantId, order) {
+        const doc = { ...order, tenantId };
+        delete doc._id; delete doc.__v;
+        if (global.isMongoConnected) {
+            return RestaurantOrder.findOneAndUpdate({ id: doc.id, tenantId }, doc, { upsert: true, new: true }).lean();
+        }
+        const idx = mockDb.restaurantOrders.findIndex(o => o.tenantId === tenantId && o.id === doc.id);
+        if (idx >= 0) mockDb.restaurantOrders[idx] = doc; else mockDb.restaurantOrders.push(doc);
+        return doc;
+    },
+    async deleteOrder(tenantId, id) {
+        if (global.isMongoConnected) return RestaurantOrder.findOneAndDelete({ id, tenantId });
+        mockDb.restaurantOrders = mockDb.restaurantOrders.filter(o => !(o.tenantId === tenantId && o.id === id));
+    }
+};
+
+// Only Admins and Managers may change printers or send test prints (the server opens the connection)
+const requirePrinterAdmin = (req, res, next) => (['Admin', 'Manager'].includes(req.user && req.user.role) ? next() : res.status(403).json({ error: 'Only an Admin or Manager can change printers' }));
+
+const FALLBACK_PRINTER_CATEGORY = '*';
+const normCategory = (c) => String(c || '').trim().toLowerCase();
+// Items printed before printedQty existed only have isPrinted
+const printedQtyOf = (item) => (typeof item.printedQty === 'number' ? item.printedQty : (item.isPrinted ? item.qty : 0));
+
+// Time on tickets in the store's local time (servers often run in UTC)
+const kitchenTime = () => new Date().toLocaleString('en-GB', {
+    timeZone: process.env.APP_TIMEZONE || 'Asia/Riyadh', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+});
+
+const isValidPrinterHost = (ip) => typeof ip === 'string' && /^[A-Za-z0-9.\-:]{1,253}$/.test(ip.trim());
+
+// Send ESC/POS lines to a network printer (raw TCP, usually port 9100)
+async function sendToNetworkPrinter(config, writeTicket) {
+    const printer = new ThermalPrinter({
+        type: PrinterTypes.EPSON,
+        interface: `tcp://${config.ip.trim()}:${Number(config.port) || 9100}`,
+        options: { timeout: 4000 }
+    });
+    writeTicket(printer);
+    printer.cut();
+    await printer.execute();
+}
+
 // Get Printer Configs
 router.get('/api/printers', authenticateToken, async (req, res) => {
     try {
-        const configs = await PrinterConfig.find({ tenantId: req.tenantId });
-        res.json(configs);
+        res.json(await restaurantStore.listPrinters(req.tenantId));
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-// Save Printer Config
-router.post('/api/printers', authenticateToken, async (req, res) => {
+// Save Printer Config (one printer per category; '*' = fallback for all other categories)
+router.post('/api/printers', authenticateToken, requirePrinterAdmin, async (req, res) => {
     try {
-        const { category, ip, port } = req.body;
-        await PrinterConfig.findOneAndUpdate(
-            { category, tenantId: req.tenantId },
-            { ip, port: port || 9100 },
-            { upsert: true }
-        );
+        const { category, name, ip, port, brand, model, station } = req.body || {};
+        if (!category || !String(category).trim()) return res.status(400).json({ error: 'Category is required' });
+        if (!isValidPrinterHost(ip)) return res.status(400).json({ error: 'A valid printer IP address or host name is required' });
+        const portNum = Number(port) || 9100;
+        if (portNum < 1 || portNum > 65535) return res.status(400).json({ error: 'Port must be between 1 and 65535' });
+        await restaurantStore.savePrinter(req.tenantId, {
+            category: String(category).trim(),
+            name: name ? String(name).trim() : '',
+            station: station === 'juice' ? 'juice' : 'kitchen',
+            ip: ip.trim(), port: portNum,
+            brand: brand || '', model: model || ''
+        });
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-// Delete Printer Config
-router.delete('/api/printers/:category', authenticateToken, async (req, res) => {
+// Print a test ticket on a printer (before or after saving it)
+router.post('/api/printers/test', authenticateToken, requirePrinterAdmin, async (req, res) => {
+    const { ip, port, name, category } = req.body || {};
+    if (!isValidPrinterHost(ip)) return res.status(400).json({ success: false, error: 'A valid printer IP address or host name is required' });
     try {
-        await PrinterConfig.findOneAndDelete({ category: req.params.category, tenantId: req.tenantId });
+        await sendToNetworkPrinter({ ip, port }, (printer) => {
+            printer.alignCenter();
+            printer.println('--- PRINTER TEST ---');
+            printer.println(name || 'Kitchen printer');
+            printer.println(`Category: ${category === FALLBACK_PRINTER_CATEGORY ? 'All other items' : (category || '-')}`);
+            printer.println(`${ip}:${Number(port) || 9100}`);
+            printer.println(kitchenTime());
+            printer.drawLine();
+        });
+        res.json({ success: true });
+    } catch (err) {
+        res.json({ success: false, error: err.message || 'Printer did not respond' });
+    }
+});
+
+// Delete Printer Config
+router.delete('/api/printers/:category', authenticateToken, requirePrinterAdmin, async (req, res) => {
+    try {
+        await restaurantStore.deletePrinter(req.tenantId, req.params.category);
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -4732,23 +4953,71 @@ router.delete('/api/printers/:category', authenticateToken, async (req, res) => 
 // Get all open restaurant orders
 router.get('/api/restaurant/orders', authenticateToken, async (req, res) => {
     try {
-        const orders = await RestaurantOrder.find({ status: 'Open', tenantId: req.tenantId });
-        res.json(orders);
+        res.json(await restaurantStore.listOpenOrders(req.tenantId));
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-// Save or Update an open restaurant order
+// Save or update the open order of a table.
+// - Without an id, the table's existing open order is reused (one open order per table).
+// - printedQty is kept from the stored order, so items already sent to the kitchen
+//   are not printed again; items removed after printing stay with qty 0 until the
+//   cancellation has been printed.
 router.post('/api/restaurant/orders', authenticateToken, async (req, res) => {
     try {
-        const { id, tableNumber, customer, items, subtotal, vat, total } = req.body;
-        const newOrder = await RestaurantOrder.findOneAndUpdate(
-            { id, tenantId: req.tenantId },
-            { tableNumber, customer, items, subtotal, vat, total, status: 'Open' },
-            { upsert: true, new: true }
-        );
-        res.json(newOrder);
+        const { id, tableNumber, customer, items, subtotal, discount, vat, total } = req.body || {};
+        if (!tableNumber) return res.status(400).json({ error: 'Table number is required' });
+        if (!Array.isArray(items)) return res.status(400).json({ error: 'Items are required' });
+
+        let existing = id ? await restaurantStore.getOrder(req.tenantId, id) : null;
+        if (!existing) existing = await restaurantStore.findOpenOrderByTable(req.tenantId, String(tableNumber));
+        if (existing && existing.status !== 'Open') existing = null;
+
+        const previous = (existing && existing.items) || [];
+        const merged = items.map(item => {
+            const prev = previous.find(p => p.productId === item.productId);
+            const printedQty = prev ? printedQtyOf(prev) : 0;
+            const qty = Math.max(0, Number(item.qty) || 0);
+            return {
+                productId: String(item.productId),
+                name: item.name, nameEN: item.nameEN || item.name, nameAR: item.nameAR || item.name,
+                price: Number(item.price) || 0, qty,
+                category: item.category || '',
+                printedQty, isPrinted: printedQty >= qty && qty > 0
+            };
+        });
+        // Removed from the cart after the kitchen got them -> keep as qty 0 so a cancel is printed
+        previous.forEach(prev => {
+            if (!merged.some(m => m.productId === prev.productId) && printedQtyOf(prev) > 0) {
+                merged.push({ ...prev, qty: 0, printedQty: printedQtyOf(prev), isPrinted: false });
+            }
+        });
+
+        const saved = await restaurantStore.saveOrder(req.tenantId, {
+            id: existing ? existing.id : (id || `REST-${Date.now()}`),
+            tableNumber: String(tableNumber), customer: customer || '',
+            items: merged,
+            subtotal: Number(subtotal) || 0, discount: Number(discount) || 0,
+            vat: Number(vat) || 0, total: Number(total) || 0,
+            status: 'Open',
+            date: existing && existing.date ? existing.date : new Date()
+        });
+        res.json(saved);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Close a table after it has been paid (keeps the order with its invoice number)
+router.post('/api/restaurant/orders/:id/close', authenticateToken, async (req, res) => {
+    try {
+        const order = await restaurantStore.getOrder(req.tenantId, req.params.id);
+        if (!order) return res.status(404).json({ error: 'Order not found' });
+        const saved = await restaurantStore.saveOrder(req.tenantId, {
+            ...order, status: 'Paid', invoiceId: (req.body && req.body.invoiceId) || '', closedAt: new Date()
+        });
+        res.json({ success: true, order: saved });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -4757,81 +5026,96 @@ router.post('/api/restaurant/orders', authenticateToken, async (req, res) => {
 // Delete a restaurant order
 router.delete('/api/restaurant/orders/:id', authenticateToken, async (req, res) => {
     try {
-        await RestaurantOrder.findOneAndDelete({ id: req.params.id, tenantId: req.tenantId });
+        await restaurantStore.deleteOrder(req.tenantId, req.params.id);
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-// Print KOT (Kitchen Order Ticket)
+// Print KOT (Kitchen Order Ticket) on multiple printers.
+// Only what changed since the last ticket is printed: new items / extra quantity,
+// and "CANCEL" lines for quantities removed after they were sent. Each item goes
+// to the printer of its category, or to the fallback printer ('*'). Items that go
+// to the same printer share one ticket. A printer that fails keeps its items
+// unprinted, so firing again retries only those.
+// Body { station: 'kitchen' | 'juice' } picks which POS button is printing: only
+// printers set to that button print; items for the other button stay pending.
 router.post('/api/restaurant/orders/:id/print-kot', authenticateToken, async (req, res) => {
     try {
-        const order = await RestaurantOrder.findOne({ id: req.params.id, tenantId: req.tenantId });
+        const order = await restaurantStore.getOrder(req.tenantId, req.params.id);
         if (!order) return res.status(404).json({ error: 'Order not found' });
 
-        const printerConfigs = await PrinterConfig.find({ tenantId: req.tenantId });
+        const station = (req.body && req.body.station) === 'juice' ? 'juice' : 'kitchen';
+        const stationOf = (c) => (c && c.station === 'juice' ? 'juice' : 'kitchen');
+        const printerConfigs = await restaurantStore.listPrinters(req.tenantId);
+        const fallback = printerConfigs.find(c => c.category === FALLBACK_PRINTER_CATEGORY);
+        const items = order.items.map(i => ({ ...i, printedQty: printedQtyOf(i) }));
 
-        // Group unprinted items by category
-        const itemsToPrint = order.items.filter(item => !item.isPrinted);
-        if (itemsToPrint.length === 0) {
-            return res.json({ success: true, message: 'No new items to print' });
+        const pending = items.filter(i => i.qty !== i.printedQty);
+        if (pending.length === 0) {
+            return res.json({ success: true, station, message: 'No new items to print', results: [], unrouted: [], waitingForOtherButton: [] });
         }
 
-        const groupedItems = {};
-        itemsToPrint.forEach(item => {
-            const cat = item.category || 'General';
-            if (!groupedItems[cat]) groupedItems[cat] = [];
-            groupedItems[cat].push(item);
+        // Group pending items by destination printer (ip:port)
+        const groups = new Map();
+        const unrouted = [];
+        const waitingForOtherButton = [];
+        pending.forEach(item => {
+            const config = printerConfigs.find(c => c.category !== FALLBACK_PRINTER_CATEGORY && normCategory(c.category) === normCategory(item.category)) || fallback;
+            if (!config || !config.ip) {
+                // Items without any printer are reported on the main (kitchen) button only
+                if (station === 'kitchen') unrouted.push({ name: item.nameEN || item.name, category: item.category || '' });
+                return;
+            }
+            if (stationOf(config) !== station) { waitingForOtherButton.push({ name: item.nameEN || item.name, printer: config.name || config.category }); return; }
+            const key = `${config.ip.trim()}:${Number(config.port) || 9100}`;
+            if (!groups.has(key)) groups.set(key, { config, items: [] });
+            groups.get(key).items.push(item);
         });
 
-        const printResults = [];
-
-        // Print each group to its configured printer
-        for (const [category, items] of Object.entries(groupedItems)) {
-            const config = printerConfigs.find(c => c.category === category);
-            
-            if (!config || !config.ip) {
-                printResults.push({ category, success: false, error: 'No printer configured for this category' });
-                continue;
-            }
-
+        const results = [];
+        for (const { config, items: groupItems } of groups.values()) {
+            const label = config.name || (config.category === FALLBACK_PRINTER_CATEGORY ? 'Default printer' : config.category);
             try {
-                let printer = new ThermalPrinter({
-                    type: PrinterTypes.EPSON,
-                    interface: `tcp://${config.ip}:${config.port}`
+                await sendToNetworkPrinter(config, (printer) => {
+                    printer.alignCenter();
+                    printer.bold(true);
+                    printer.println('--- KITCHEN TICKET ---');
+                    printer.println(label.toUpperCase());
+                    printer.bold(false);
+                    printer.println(`Table: ${order.tableNumber}   Order: ${order.id}`);
+                    printer.println(kitchenTime());
+                    printer.drawLine();
+                    printer.alignLeft();
+                    groupItems.forEach(item => {
+                        // English name: ESC/POS printers can't render Arabic text without an image renderer
+                        const name = item.nameEN || item.name;
+                        const delta = item.qty - item.printedQty;
+                        if (delta > 0) printer.println(`${delta}x ${name}`);
+                        else printer.println(`CANCEL ${-delta}x ${name}`);
+                    });
+                    printer.drawLine();
                 });
-
-                printer.alignCenter();
-                printer.println("--- KITCHEN TICKET ---");
-                printer.println(`Table: ${order.tableNumber}`);
-                printer.println(`Date: ${new Date().toLocaleString()}`);
-                printer.drawLine();
-                
-                printer.alignLeft();
-                items.forEach(item => {
-                    printer.println(`${item.qty}x ${item.name}`);
+                groupItems.forEach(gi => {
+                    const target = items.find(i => i.productId === gi.productId);
+                    target.printedQty = target.qty;
                 });
-                
-                printer.drawLine();
-                printer.cut();
-
-                const executePrint = await printer.execute();
-                printResults.push({ category, success: true });
-
-                // Mark items as printed
-                items.forEach(item => {
-                    item.isPrinted = true;
-                });
+                results.push({ printer: label, address: `${config.ip}:${config.port || 9100}`, success: true, lines: groupItems.length });
             } catch (err) {
-                printResults.push({ category, success: false, error: err.message });
+                results.push({ printer: label, address: `${config.ip}:${config.port || 9100}`, success: false, error: err.message || 'Printer did not respond', lines: groupItems.length });
             }
         }
 
-        // Save updated order
-        await order.save();
+        // Drop cancelled lines whose cancellation has been printed; refresh isPrinted
+        const remaining = items
+            .filter(i => !(i.qty === 0 && i.printedQty === 0))
+            .map(i => ({ ...i, isPrinted: i.qty > 0 && i.printedQty >= i.qty }));
+        await restaurantStore.saveOrder(req.tenantId, { ...order, items: remaining });
 
-        res.json({ success: true, results: printResults });
+        const allPrinted = results.every(r => r.success) && unrouted.length === 0;
+        const message = results.length === 0 && unrouted.length === 0 ? 'No new items for this button' : undefined;
+        res.json({ success: allPrinted, station, message, results, unrouted, waitingForOtherButton });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }

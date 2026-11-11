@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-const TableManagement = ({ currentLanguage, translations, headers, setActiveTab, setTableNum, loadCartFromOrder }) => {
+const TableManagement = ({ currentLanguage, translations, headers, setActiveTab, setTableNum, loadCartFromOrder, formatCurrency }) => {
     const [orders, setOrders] = useState([]);
     
     // Simulate 20 tables as defined in POS.jsx
@@ -9,7 +9,7 @@ const TableManagement = ({ currentLanguage, translations, headers, setActiveTab,
     const fetchOrders = () => {
         fetch('/api/restaurant/orders', { headers })
             .then(res => res.json())
-            .then(data => setOrders(data))
+            .then(data => setOrders(Array.isArray(data) ? data : []))
             .catch(err => console.error(err));
     };
 
@@ -78,16 +78,27 @@ const TableManagement = ({ currentLanguage, translations, headers, setActiveTab,
                                 {currentLanguage === 'ar' ? `طاولة ${tableNumber}` : `Table ${tableNumber}`}
                             </div>
                             
-                            {isOccupied ? (
-                                <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                                    <div style={{ color: 'var(--accent-cyan)' }}>
-                                        {order.total.toFixed(2)} SAR
+                            {isOccupied ? (() => {
+                                const activeItems = order.items.filter(i => Number(i.qty) > 0);
+                                const itemCount = activeItems.reduce((s, i) => s + Number(i.qty), 0);
+                                // Quantities (or cancellations) not yet sent to the kitchen
+                                const pending = order.items.filter(i => Number(i.qty) !== Number(typeof i.printedQty === 'number' ? i.printedQty : (i.isPrinted ? i.qty : 0))).length;
+                                return (
+                                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                        <div style={{ color: 'var(--accent-cyan)' }}>
+                                            {formatCurrency ? formatCurrency(Number(order.total) || 0) : `${(Number(order.total) || 0).toFixed(2)} SAR`}
+                                        </div>
+                                        <div>
+                                            {itemCount} {currentLanguage === 'ar' ? 'عناصر' : 'Items'}
+                                        </div>
+                                        {pending > 0 && (
+                                            <div style={{ color: 'var(--accent-gold)', fontWeight: 'bold' }}>
+                                                {currentLanguage === 'ar' ? `${pending} لم تُرسل للمطبخ` : `${pending} not sent to kitchen`}
+                                            </div>
+                                        )}
                                     </div>
-                                    <div>
-                                        {order.items.length} {currentLanguage === 'ar' ? 'عناصر' : 'Items'}
-                                    </div>
-                                </div>
-                            ) : (
+                                );
+                            })() : (
                                 <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
                                     {currentLanguage === 'ar' ? 'متاحة' : 'Available'}
                                 </div>

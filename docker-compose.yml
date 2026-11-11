@@ -18,7 +18,10 @@ services:
     environment:
       - PORT=8089
       - MONGO_URI=mongodb://db:27017/kamysoft-erp
-      - JWT_SECRET=kamysoft_super_secret_key_2026
+      # Set these in a .env file next to this compose file (never commit it).
+      # Generate with: node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+      - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET in .env (32+ random characters)}
+      - SAAS_ADMIN_KEY=${SAAS_ADMIN_KEY:-}
     depends_on:
       - db
     restart: unless-stopped

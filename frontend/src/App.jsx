@@ -36,6 +36,7 @@ import Employees from './views/people/Employees';
 import Sidebar from './components/Sidebar';
 import TableManagement from './views/restaurant/TableManagement';
 import PrinterSetup from './views/restaurant/PrinterSetup';
+import BusinessLandingPage from './views/storefront/BusinessLandingPage';
 import SaasAdmin from './SaasAdmin';
 import Maintenance from './views/services/Maintenance';
 import Properties from './views/realestate/Properties';
@@ -364,7 +365,7 @@ const translations = {
         signature: "Cryptographic Signature",
         xmlValidationOk: "UBL 2.1 Schema Compliance: Valid",
         
-        currencySymbol: "SAR",
+        currencySymbol: "\u20C1",
         tailoring_dashboard: "Bespoke Tailoring Dashboard",
         tailoring_measurements: "Customer Measurement Profiles",
         tailoring_orders: "Tailoring Orders & Advance Deposits",
@@ -593,7 +594,7 @@ const translations = {
         signature: "التوقيع التشفيري الرقمي",
         xmlValidationOk: "مطابقة هيكلية UBL 2.1: سليم وصالح",
         
-        currencySymbol: "ر.س",
+        currencySymbol: "\u20C1",
         tailoring_dashboard: "لوحة القيادة للخياطة والتفصيل",
         tailoring_measurements: "سجل مقاسات العملاء وتفضيلات الموديل",
         tailoring_orders: "أوامر التفصيل والعربون والتسليم",
@@ -771,6 +772,7 @@ export default function App() {
 
     const [zatcaConn, setZatcaConn] = useState({
         env: 'sandbox',
+        mode: 'connected',
         endpoint: 'https://developer.zatca.gov.sa/api/v2/invoice',
         clientId: 'test-client-id-1092837',
         clientSecret: '••••••••••••••••••••••••',
@@ -778,6 +780,10 @@ export default function App() {
         status: 'CONNECTED',
         autoSend: true,
     });
+    // ZATCA mode (Settings > ZATCA): 'connected' signs and reports invoices, 'not_connected' does neither
+    const zatcaConnected = ((zatcaConn && zatcaConn.mode) || 'connected') === 'connected';
+    // Restaurant: is a printer assigned to the separate Juice button?
+    const [hasJuicePrinter, setHasJuicePrinter] = useState(false);
 
     const [reportSubTab, setReportSubTab] = useState('daily');
     const [quotations, setQuotations] = useState([]);
@@ -809,6 +815,10 @@ export default function App() {
     const [activeCustomer, setActiveCustomer] = useState('walk-in');
     const [couponInput, setCouponInput] = useState('');
     const [activeCoupon, setActiveCoupon] = useState(null);
+    // Cashier's manual discount in the POS: a percentage of the subtotal or a fixed amount
+    const [manualDiscount, setManualDiscount] = useState({ type: 'percent', value: '' });
+    // Open restaurant order loaded from Table Management (reused when the table is saved again)
+    const [activeRestaurantOrderId, setActiveRestaurantOrderId] = useState(null);
     const [posFilter, setPosFilter] = useState('all');
     const [posSearch, setPosSearch] = useState('');
     const [paymentMethod, setPaymentMethod] = useState('cash');
@@ -934,24 +944,25 @@ export default function App() {
             .catch(() => console.log("Failed to fetch invoices"));
 
         // Fetch expenses
-        fetch('/api/expenses')
+        fetch('/api/expenses', { headers })
             .then(res => { if (!res.ok) throw new Error(); return res.json(); })
             .then(data => setExpenses(data))
             .catch(() => console.log("Failed to fetch expenses"));
 
         // Fetch assets
-        fetch('/api/assets')
+        fetch('/api/assets', { headers })
             .then(res => { if (!res.ok) throw new Error(); return res.json(); })
             .then(data => setAssets(data))
             .catch(() => console.log("Failed to fetch assets"));
 
         // Fetch CRM lists
-        fetch('/api/customers').then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setCustomers(data)).catch(() => {});
-        fetch('/api/employees').then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setEmployees(data)).catch(() => {});
-        fetch('/api/suppliers').then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setSuppliers(data)).catch(() => {});
-        fetch('/api/orders').then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setOrders(data)).catch(() => {});
+        fetch('/api/customers', { headers }).then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setCustomers(data)).catch(() => {});
+        fetch('/api/employees', { headers }).then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setEmployees(data)).catch(() => {});
+        fetch('/api/suppliers', { headers }).then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setSuppliers(data)).catch(() => {});
+        fetch('/api/orders', { headers }).then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setOrders(data)).catch(() => {});
         fetch('/api/users', { headers }).then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => { if (Array.isArray(data)) setUsersList(data); }).catch(() => {});
         fetch('/api/quotations', { headers }).then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setQuotations(data.filter((v,i,a)=>a.findIndex(t=>t.id===v.id)===i))).catch(() => {});
+        fetch('/api/printers', { headers }).then(res => res.ok ? res.json() : []).then(list => setHasJuicePrinter(Array.isArray(list) && list.some(p => p.station === 'juice'))).catch(() => {});
     }, [token]);
 
     // Apply configurations on load
@@ -1039,8 +1050,10 @@ export default function App() {
         const baseCurr = (settings && settings.baseCurrency) || 'SAR';
         const rate = rates[baseCurr] || 1;
         const converted = amountSAR * rate;
-        const symbol = translations[currentLanguage].currencySymbol === 'ر.س' && baseCurr !== 'SAR' ? 
-            baseCurr : translations[currentLanguage].currencySymbol;
+        // Saudi Riyal uses the official SAMA symbol (U+20C1, drawn by the bundled
+        // SaudiRiyal font). Other base currencies show their ISO code; before, the
+        // English UI showed "SAR" even after converting the amount to USD/EUR.
+        const symbol = baseCurr === 'SAR' ? translations[currentLanguage].currencySymbol : baseCurr;
         return `${converted.toFixed(2)} ${symbol}`;
     };
     const handleLogin = (e) => {
@@ -1247,13 +1260,29 @@ export default function App() {
         }
     };
 
+    // Total cart discount before VAT: the coupon (e.g. KAMY50) plus the manual discount.
+    // A percentage applies to what is left after the coupon; the total never exceeds the subtotal.
+    const getCartDiscount = (subtotal) => {
+        const couponPart = activeCoupon ? subtotal * activeCoupon.rate : 0;
+        const value = parseFloat(manualDiscount.value);
+        let manualPart = 0;
+        if (!isNaN(value) && value > 0) {
+            manualPart = manualDiscount.type === 'percent'
+                ? (subtotal - couponPart) * Math.min(value, 100) / 100
+                : value;
+        }
+        return Math.max(0, Math.min(subtotal, Math.round((couponPart + manualPart) * 100) / 100));
+    };
+
     const loadCartFromOrder = (order) => {
         if (!order) {
             setCart([]);
             setActiveCoupon(null);
+            setManualDiscount(d => ({ ...d, value: '' }));
+            setActiveRestaurantOrderId(null);
             return;
         }
-        const mappedCart = order.items.map(item => {
+        const mappedCart = order.items.filter(item => Number(item.qty) > 0).map(item => {
             const product = products.find(p => p.id === item.productId) || {
                 id: item.productId,
                 nameEN: item.name,
@@ -1266,114 +1295,112 @@ export default function App() {
         setCart(mappedCart);
         setActiveCustomer(order.customer || 'walk-in');
         setTableNum(order.tableNumber);
+        setActiveCoupon(null);
+        setManualDiscount({ type: 'amount', value: Number(order.discount) > 0 ? String(order.discount) : '' });
+        setActiveRestaurantOrderId(order.id);
+    };
+
+    // Builds the open order for the selected table from the cart. The order id of a
+    // table opened from Table Management is reused, so saving again updates that
+    // order instead of creating a second one for the same table.
+    const buildRestaurantOrder = () => {
+        let subtotal = 0;
+        const items = cart.map(c => {
+            subtotal += c.product.price * c.qty;
+            return {
+                productId: c.product.id,
+                name: currentLanguage === 'ar' ? c.product.nameAR : c.product.nameEN,
+                nameEN: c.product.nameEN || c.product.nameAR,
+                nameAR: c.product.nameAR || c.product.nameEN,
+                price: c.product.price,
+                qty: c.qty,
+                category: c.product.category
+            };
+        });
+        const discount = getCartDiscount(subtotal);
+        const taxable = subtotal - discount;
+        const vat = taxable * (settings.taxRate / 100);
+        return {
+            id: activeRestaurantOrderId || undefined,
+            tableNumber: tableNum,
+            customer: activeCustomer !== 'walk-in' ? customers.find(c => c.id === activeCustomer)?.name : '',
+            items,
+            subtotal,
+            discount,
+            vat,
+            total: taxable + vat
+        };
+    };
+
+    const resetRestaurantCart = () => {
+        setCart([]);
+        setActiveCoupon(null);
+        setManualDiscount(d => ({ ...d, value: '' }));
+        setActiveRestaurantOrderId(null);
+        setTableNum('');
+        setActiveTab('tableManagement');
+    };
+
+    const saveRestaurantOrder = () => {
+        if (cart.length === 0 || !tableNum) {
+            alert(currentLanguage === 'ar' ? 'السلة فارغة أو لم يتم تحديد طاولة' : 'Cart is empty or no table selected');
+            return Promise.resolve(null);
+        }
+        return fetch('/api/restaurant/orders', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(buildRestaurantOrder())
+        }).then(res => res.json().then(data => {
+            if (!res.ok) throw new Error(data.error || 'Saving the table failed');
+            return data;
+        }));
     };
 
     const handleHoldTable = () => {
-        if (cart.length === 0 || !tableNum) {
-            alert(currentLanguage === 'ar' ? 'السلة فارغة أو لم يتم تحديد طاولة' : 'Cart is empty or no table selected');
-            return;
-        }
-        
-        let subtotal = 0;
-        const items = cart.map(c => {
-            subtotal += c.product.price * c.qty;
-            return { 
-                productId: c.product.id, 
-                name: currentLanguage === 'ar' ? c.product.nameAR : c.product.nameEN, 
-                price: c.product.price, 
-                qty: c.qty,
-                category: c.product.category,
-                isPrinted: false
-            };
-        });
-
-        const discount = activeCoupon ? subtotal * activeCoupon.rate : 0;
-        const taxable = subtotal - discount;
-        const vat = taxable * (settings.taxRate / 100);
-        const grandTotal = taxable + vat;
-
-        const orderData = {
-            id: `REST-${Date.now()}`,
-            tableNumber: tableNum,
-            customer: activeCustomer !== 'walk-in' ? customers.find(c => c.id === activeCustomer)?.name : '',
-            items,
-            subtotal,
-            vat,
-            total: grandTotal
-        };
-
-        fetch('/api/restaurant/orders', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(orderData)
-        })
-        .then(res => res.json())
-        .then(() => {
-            alert(currentLanguage === 'ar' ? 'تم حفظ الطاولة بنجاح' : 'Table held successfully');
-            setCart([]);
-            setTableNum('');
-            setActiveTab('tableManagement');
-        })
-        .catch(err => console.error(err));
+        saveRestaurantOrder()
+            .then(saved => {
+                if (!saved) return;
+                alert(currentLanguage === 'ar' ? 'تم حفظ الطاولة بنجاح' : 'Table held successfully');
+                resetRestaurantCart();
+            })
+            .catch(err => alert((currentLanguage === 'ar' ? 'تعذر حفظ الطاولة: ' : 'Could not save the table: ') + err.message));
     };
 
-    const handleFireToKitchen = () => {
-        if (cart.length === 0 || !tableNum) {
-            alert(currentLanguage === 'ar' ? 'السلة فارغة أو لم يتم تحديد طاولة' : 'Cart is empty or no table selected');
-            return;
-        }
-
-        const orderId = `REST-${Date.now()}`;
-        
-        let subtotal = 0;
-        const items = cart.map(c => {
-            subtotal += c.product.price * c.qty;
-            return { 
-                productId: c.product.id, 
-                name: currentLanguage === 'ar' ? c.product.nameAR : c.product.nameEN, 
-                price: c.product.price, 
-                qty: c.qty,
-                category: c.product.category,
-                isPrinted: false
-            };
-        });
-
-        const discount = activeCoupon ? subtotal * activeCoupon.rate : 0;
-        const taxable = subtotal - discount;
-        const vat = taxable * (settings.taxRate / 100);
-        const grandTotal = taxable + vat;
-
-        const orderData = {
-            id: orderId,
-            tableNumber: tableNum,
-            customer: activeCustomer !== 'walk-in' ? customers.find(c => c.id === activeCustomer)?.name : '',
-            items,
-            subtotal,
-            vat,
-            total: grandTotal
-        };
-
-        fetch('/api/restaurant/orders', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(orderData)
-        })
-        .then(res => res.json())
-        .then(savedOrder => {
-            fetch(`/api/restaurant/orders/${savedOrder.id}/print-kot`, { method: 'POST', headers })
-                .then(res => res.json())
-                .then(printRes => {
-                    if (printRes.success) {
-                        alert(currentLanguage === 'ar' ? 'تم إرسال الطلب للمطبخ' : 'Order fired to kitchen');
-                        setCart([]);
-                        setTableNum('');
-                        setActiveTab('tableManagement');
-                    } else {
-                        alert(currentLanguage === 'ar' ? 'حدث خطأ أثناء الطباعة' : 'Error printing KOT');
-                    }
-                });
-        })
-        .catch(err => console.error(err));
+    // Saves the table, then sends only new / changed items to the kitchen printers.
+    // Tells the cashier which printers worked, which failed and which items have no printer.
+    // station 'kitchen' = main Fire button (Main + Kitchen printers); 'juice' = separate Juice button
+    const handleFireToKitchen = (station = 'kitchen') => {
+        saveRestaurantOrder()
+            .then(saved => {
+                if (!saved) return;
+                return fetch(`/api/restaurant/orders/${saved.id}/print-kot`, { method: 'POST', headers, body: JSON.stringify({ station }) })
+                    .then(res => res.json())
+                    .then(printRes => {
+                        const ar = currentLanguage === 'ar';
+                        const lines = [];
+                        (printRes.results || []).forEach(r => lines.push(r.success
+                            ? `✓ ${r.printer} (${r.lines})`
+                            : `✗ ${r.printer} (${r.address}): ${r.error}`));
+                        if ((printRes.unrouted || []).length > 0) {
+                            lines.push((ar ? 'بدون طابعة: ' : 'No printer for: ') + printRes.unrouted.map(u => `${u.name}${u.category ? ` [${u.category}]` : ''}`).join(', '));
+                        }
+                        if (printRes.error) lines.push(printRes.error);
+                        const isJuice = station === 'juice';
+                        if ((printRes.waitingForOtherButton || []).length > 0) {
+                            lines.push((isJuice
+                                ? (ar ? 'بانتظار زر المطبخ: ' : 'Waiting for the Kitchen button: ')
+                                : (ar ? 'بانتظار زر العصائر: ' : 'Waiting for the Juice button: ')) + printRes.waitingForOtherButton.map(w => w.name).join(', '));
+                        }
+                        let title;
+                        if (printRes.message) title = isJuice ? (ar ? 'لا توجد عصائر جديدة' : 'No new juice items') : (ar ? 'لا توجد أصناف جديدة للمطبخ' : 'No new items to send to the kitchen');
+                        else if (printRes.success) title = isJuice ? (ar ? 'تم إرسال العصائر' : 'Juices sent') : (ar ? 'تم إرسال الطلب للمطبخ' : 'Order fired to kitchen');
+                        else title = ar ? 'لم تتم طباعة كل الأصناف. أعد الإرسال بعد إصلاح الطابعة؛ ستُطبع الأصناف غير المطبوعة فقط.' : 'Not everything printed. Fire again after fixing the printer; only the unprinted items will be sent.';
+                        alert([title, ...lines].join('\n'));
+                        // The order is saved either way; unprinted items stay pending on the table
+                        resetRestaurantCart();
+                    });
+            })
+            .catch(err => alert((currentLanguage === 'ar' ? 'تعذر الإرسال للمطبخ: ' : 'Could not send to the kitchen: ') + err.message));
     };
 
     const processCheckout = () => {
@@ -1385,7 +1412,7 @@ export default function App() {
             return { id: c.product.id, name: currentLanguage === 'ar' ? c.product.nameAR : c.product.nameEN, price: c.product.price, qty: c.qty };
         });
 
-        const discount = activeCoupon ? subtotal * activeCoupon.rate : 0;
+        const discount = getCartDiscount(subtotal);
         const taxable = subtotal - discount;
         const vat = taxable * (settings.taxRate / 100);
         const grandTotal = taxable + vat;
@@ -1397,7 +1424,12 @@ export default function App() {
             if (cObj) customerLabel = cObj.name;
         }
 
-        const formattedDate = new Date().toLocaleString();
+        // Save a fixed "YYYY-MM-DD HH:mm:ss" (local time) instead of toLocaleString(),
+        // whose format changes with the browser language (Arabic digits, Hijri calendar).
+        // Reports and the ZATCA XML (IssueDate/IssueTime) both read this format directly.
+        const nowDate = new Date();
+        const pad2 = (n) => String(n).padStart(2, '0');
+        const formattedDate = `${nowDate.getFullYear()}-${pad2(nowDate.getMonth() + 1)}-${pad2(nowDate.getDate())} ${pad2(nowDate.getHours())}:${pad2(nowDate.getMinutes())}:${pad2(nowDate.getSeconds())}`;
 
         const postData = {
             date: formattedDate,
@@ -1423,6 +1455,12 @@ export default function App() {
         })
         .then(newInv => {
             let finalInv = newInv;
+            if (activeRestaurantOrderId) {
+                const closingId = activeRestaurantOrderId;
+                fetch(`/api/restaurant/orders/${closingId}/close`, { method: 'POST', headers, body: JSON.stringify({ invoiceId: newInv.id }) })
+                    .catch(err => console.error('Could not close table order', err));
+                setActiveRestaurantOrderId(null);
+            }
             setInvoices([...invoices, newInv]);
             setActiveInvoice(newInv);
             setInvoiceFormat(activeTab === 'b2bsale' ? 'a4' : 'thermal'); 
@@ -1430,18 +1468,20 @@ export default function App() {
             setShowInvoiceModal(true);
             setCart([]);
             setActiveCoupon(null);
+            setManualDiscount(d => ({ ...d, value: '' }));
             setCouponInput('');
 
-            if (zatcaConn.autoSend) {
+            if (zatcaConnected && zatcaConn.autoSend) {
                 fetch(`/api/invoices/${newInv.id}/zatca-report`, { method: 'POST', headers: headers })
-                .then(() => {
-                    setInvoices(prev => prev.map(i => i.id === newInv.id ? { ...i, zatcaStatus: 'REPORTED' } : i));
-                    setActiveInvoice(prev => prev && prev.id === newInv.id ? { ...prev, zatcaStatus: 'REPORTED' } : prev);
+                .then(res => res.json().then(data => ({ ok: res.ok, data })))
+                .then(({ ok, data }) => {
+                    // Only mark REPORTED when ZATCA accepted it; otherwise it stays PENDING to retry
+                    if (!ok) { console.warn('ZATCA auto-send failed:', data.error); return; }
+                    const status = data.zatcaStatus || 'REPORTED';
+                    setInvoices(prev => prev.map(i => i.id === newInv.id ? { ...i, zatcaStatus: status, qrCode: data.qrCode || i.qrCode } : i));
+                    setActiveInvoice(prev => prev && prev.id === newInv.id ? { ...prev, zatcaStatus: status, qrCode: data.qrCode || prev.qrCode } : prev);
                 })
-                .catch(() => {
-                    setInvoices(prev => prev.map(i => i.id === newInv.id ? { ...i, zatcaStatus: 'REPORTED' } : i));
-                    setActiveInvoice(prev => prev && prev.id === newInv.id ? { ...prev, zatcaStatus: 'REPORTED' } : prev);
-                });
+                .catch(err => console.warn('ZATCA auto-send failed:', err.message));
             }
         })
         .catch(() => {
@@ -1462,12 +1502,10 @@ export default function App() {
             setShowInvoiceModal(true);
             setCart([]);
             setActiveCoupon(null);
+            setManualDiscount(d => ({ ...d, value: '' }));
             setCouponInput('');
 
-            if (zatcaConn.autoSend) {
-                setInvoices(prev => prev.map(i => i.id === mockInv.id ? { ...i, zatcaStatus: 'REPORTED' } : i));
-                setActiveInvoice(prev => prev && prev.id === mockInv.id ? { ...prev, zatcaStatus: 'REPORTED' } : prev);
-            }
+            // Not saved on the server, so it can't have been reported to ZATCA
         });
     };
     
@@ -1643,7 +1681,7 @@ const handleB2BSubmit = () => {
             return { id: c.product.id, name: currentLanguage === 'ar' ? c.product.nameAR : c.product.nameEN, price: c.product.price, qty: c.qty };
         });
 
-        const discount = activeCoupon ? subtotal * activeCoupon.rate : 0;
+        const discount = getCartDiscount(subtotal);
         const taxable = subtotal - discount;
         const vat = taxable * (settings.taxRate / 100);
         const grandTotal = taxable + vat;
@@ -1677,6 +1715,7 @@ const handleB2BSubmit = () => {
             setShowQuotationModal(true);
             setCart([]);
             setActiveCoupon(null);
+            setManualDiscount(d => ({ ...d, value: '' }));
             setCouponInput('');
         })
         .catch(() => {
@@ -1690,6 +1729,7 @@ const handleB2BSubmit = () => {
             setShowQuotationModal(true);
             setCart([]);
             setActiveCoupon(null);
+            setManualDiscount(d => ({ ...d, value: '' }));
             setCouponInput('');
         });
     };
@@ -1820,12 +1860,9 @@ const handleB2BSubmit = () => {
                     appendLog("SUCCESS", "Tax Invoice cryptographically signed & registered in ZATCA portal.", 200);
                     setIsReportingZatca(false);
                 })
-                .catch(() => {
-                    // Fallback
-                    const updated = invoices.map(i => i.id === inv.id ? { ...i, zatcaStatus: 'REPORTED' } : i);
-                    setInvoices(updated);
-                    appendLog("SUCCESS", "HTTP/1.1 200 OK | Response: CLEARED & APPROVED (Fallback Mode)", 100);
-                    appendLog("SUCCESS", "Simplified Tax Invoice registered in ZATCA database.", 200);
+                .catch((err) => {
+                    // Not reported: keep the invoice's status so it can be retried
+                    appendLog("ERROR", `ZATCA reporting failed: ${err.message}`, 100);
                     setIsReportingZatca(false);
                 });
         }, 3600);
@@ -1857,7 +1894,7 @@ const handleB2BSubmit = () => {
         })
         .then(data => {
             setInvoices(prev => prev.map(inv => inv.id === id ? { ...inv, zatcaStatus: 'REFUNDED' } : inv));
-            fetch('/api/products')
+            fetch('/api/products', { headers })
                 .then(res => res.json())
                 .then(prods => setProducts(prods))
                 .catch(() => {});
@@ -2313,11 +2350,28 @@ const handleB2BSubmit = () => {
             );
         }
 
+        // Property-management stores keep the property portal; every other business type
+        // gets a home page designed for its kind of business (it used to be the property
+        // portal for everyone).
+        const isRealEstateTenant =
+            settings?.businessType === 'realestate' ||
+            (!settings?.businessType && settings?.enabledModules?.propertyManagement);
+        if (isRealEstateTenant) {
+            return (
+                <TenantWebPortal
+                    tenantId={tenantId}
+                    currentLanguage={currentLanguage}
+                    setLanguage={setCurrentLanguage}
+                />
+            );
+        }
+
         return (
-            <TenantWebPortal 
+            <BusinessLandingPage
                 tenantId={tenantId}
                 currentLanguage={currentLanguage}
                 setLanguage={setCurrentLanguage}
+                initialSettings={settings?.tenantId === tenantId ? settings : null}
             />
         );
     }
@@ -2418,7 +2472,7 @@ const handleB2BSubmit = () => {
         );
     }
 
-    const props = { generateZatcaQR, handleHoldTable, handleFireToKitchen, loadCartFromOrder, handleB2BAddItem, setHostname, products, settings, activeCoupon, handleLaunchApp, simulatedDomain, setQuotations, setAuthError, handleB2BItemChange, loginUsername, calculateAssetValues, handleDeleteExpense, handleSaveQuotation, handleB2BRemoveItem, simulatedTenant, setReportSubTab, handleRefundInvoice, handleRegisterSuccess, setServiceDuration, activeCustomer, setLoginPassword, setMobileMenuOpen, setZatcaConsole, zatcaSelectInvoice, setShowAssetModal, invoices, setUser, setTableNum, quotations, quotationForm, currentLanguage, showAssetQrModal, posFilter, setToken, setInvoiceSource, showCustomerModal, salesStartDate, usersList, setSplitCard, activeTab, downloadXml, setActiveInvoice, setActiveAssetForQr, setCustForm, couponInput, setInvoiceFormat, splitCash, setShowOrderModal, setPosFilter, setSalesEndDate, setShowAssetQrModal, showOrderModal, applyCoupon, handleSaveOrder, setZatcaConn, zatcaConsole, setQuotationForm, setOrderForm, handleSaveQuotationFromCart, setShowCustomerModal, handleDeleteOrder, setSimulatedDomain, setShowExpenseModal, setB2bForm, expenses, isReportingZatca, showQuotationModal, setCurrentLanguage, reportSubTab, handleSaveUser, setProducts, orders, handleSaveAsset, setSalesSearch, setEmployees, handleB2BSubmit, customers, setExpForm, orderForm, setCustomers, serviceDuration, assets, showUserModal, getBaseDomain, activeQuotation, updateCartQty, setActiveCustomer, simulateZATCAReporting, setZatcaSelectInvoice, user, setSuppliers, handleLogin, handleSaveCustomer, invoiceFormat, setCart, setPosSearch, activeAssetForQr, hostname, setActiveQuotation, custForm, splitCard, suppliers, addToCart, authError, zatcaConn, setOrders, setLoginUsername, handleDeleteCustomer, setActiveTab, handleSaveExpense, handleDeleteQuotation, setTheme, userForm, expForm, salesSearch, setSplitCash, setSalesStartDate, salesEndDate, invoiceSource, b2bForm, isAllowedTab, triggerZatcaPortalClearance, setSimulatedTenant, setShowQuotationModal, setPaymentMethod, setExpenses, setShowQuotationCrudModal, setShowInvoiceModal, processCheckout, setUsersList, setIsReportingZatca, posSearch, showInvoiceModal, setAssetForm, getPaymentMethodLabel, formatCurrency, handleLogout, setInvoices, tableNum, setSettings, cart, setActiveCoupon, mobileMenuOpen, paymentMethod, assetForm, showExpenseModal, token, employees, setShowUserModal, showAssetModal, setUserForm, loginPassword, handleDeleteUser, theme, setCouponInput, setAssets, activeInvoice, showQuotationCrudModal, translations, headers, units, setUnits };
+    const props = { generateZatcaQR, handleHoldTable, handleFireToKitchen, hasJuicePrinter, setHasJuicePrinter, zatcaConnected,loadCartFromOrder, handleB2BAddItem, setHostname, products, settings, activeCoupon, manualDiscount, setManualDiscount, getCartDiscount, handleLaunchApp, simulatedDomain, setQuotations, setAuthError, handleB2BItemChange, loginUsername, calculateAssetValues, handleDeleteExpense, handleSaveQuotation, handleB2BRemoveItem, simulatedTenant, setReportSubTab, handleRefundInvoice, handleRegisterSuccess, setServiceDuration, activeCustomer, setLoginPassword, setMobileMenuOpen, setZatcaConsole, zatcaSelectInvoice, setShowAssetModal, invoices, setUser, setTableNum, quotations, quotationForm, currentLanguage, showAssetQrModal, posFilter, setToken, setInvoiceSource, showCustomerModal, salesStartDate, usersList, setSplitCard, activeTab, downloadXml, setActiveInvoice, setActiveAssetForQr, setCustForm, couponInput, setInvoiceFormat, splitCash, setShowOrderModal, setPosFilter, setSalesEndDate, setShowAssetQrModal, showOrderModal, applyCoupon, handleSaveOrder, setZatcaConn, zatcaConsole, setQuotationForm, setOrderForm, handleSaveQuotationFromCart, setShowCustomerModal, handleDeleteOrder, setSimulatedDomain, setShowExpenseModal, setB2bForm, expenses, isReportingZatca, showQuotationModal, setCurrentLanguage, reportSubTab, handleSaveUser, setProducts, orders, handleSaveAsset, setSalesSearch, setEmployees, handleB2BSubmit, customers, setExpForm, orderForm, setCustomers, serviceDuration, assets, showUserModal, getBaseDomain, activeQuotation, updateCartQty, setActiveCustomer, simulateZATCAReporting, setZatcaSelectInvoice, user, setSuppliers, handleLogin, handleSaveCustomer, invoiceFormat, setCart, setPosSearch, activeAssetForQr, hostname, setActiveQuotation, custForm, splitCard, suppliers, addToCart, authError, zatcaConn, setOrders, setLoginUsername, handleDeleteCustomer, setActiveTab, handleSaveExpense, handleDeleteQuotation, setTheme, userForm, expForm, salesSearch, setSplitCash, setSalesStartDate, salesEndDate, invoiceSource, b2bForm, isAllowedTab, triggerZatcaPortalClearance, setSimulatedTenant, setShowQuotationModal, setPaymentMethod, setExpenses, setShowQuotationCrudModal, setShowInvoiceModal, processCheckout, setUsersList, setIsReportingZatca, posSearch, showInvoiceModal, setAssetForm, getPaymentMethodLabel, formatCurrency, handleLogout, setInvoices, tableNum, setSettings, cart, setActiveCoupon, mobileMenuOpen, paymentMethod, assetForm, showExpenseModal, token, employees, setShowUserModal, showAssetModal, setUserForm, loginPassword, handleDeleteUser, theme, setCouponInput, setAssets, activeInvoice, showQuotationCrudModal, translations, headers, units, setUnits };
 
     const b2bProductOptions = products.map(p => (
         <option key={p.id} value={p.id}>{currentLanguage === 'ar' ? p.nameAR : p.nameEN}</option>
@@ -3106,13 +3160,21 @@ const handleB2BSubmit = () => {
                     <div className="glass-card">
                         <h3 style={{ marginBottom: '15px' }}>{translations[currentLanguage].zatcaPortal}</h3>
                         <div className="card-grid" style={{ marginBottom: '24px' }}>
-                            <div className="glass-card green">
+                            {/* Shows the real ZATCA mode (it used to always say "Compliant & Active") */}
+                            <div className={`glass-card ${zatcaConnected ? 'green' : ''}`}>
                                 <div className="card-stat">
                                     <div className="stat-info">
-                                        <h3>ZATCA Clearance Status</h3>
-                                        <div style={{ color: 'var(--accent-success)', fontWeight: 'bold' }}>UBL 2.1 Compliant & Active</div>
+                                        <h3>{currentLanguage === 'ar' ? 'وضع الربط مع هيئة الزكاة' : 'ZATCA mode'}</h3>
+                                        <div style={{ color: zatcaConnected ? 'var(--accent-success)' : 'var(--text-secondary)', fontWeight: 'bold' }}>
+                                            {zatcaConnected
+                                                ? (currentLanguage === 'ar' ? `متصل (${zatcaConn.env || 'sandbox'})` : `Connected (${zatcaConn.env || 'sandbox'})`)
+                                                : (currentLanguage === 'ar' ? 'غير متصل: لا تُرسل الفواتير إلى الهيئة' : 'Not connected: invoices are not reported')}
+                                        </div>
+                                        <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                                            {currentLanguage === 'ar' ? 'غيّر الوضع من الإعدادات العامة ← إعدادات هيئة الزكاة' : 'Change it in General Settings → ZATCA Connection Settings'}
+                                        </div>
                                     </div>
-                                    <div className="stat-icon"><i className="ri-checkbox-circle-line"></i></div>
+                                    <div className="stat-icon"><i className={zatcaConnected ? 'ri-checkbox-circle-line' : 'ri-cloud-off-line'}></i></div>
                                 </div>
                             </div>
                         </div>
@@ -3127,8 +3189,8 @@ const handleB2BSubmit = () => {
                                         {invoices.map(i => <option key={i.id} value={i.id}>{i.id} - {i.customer} ({formatCurrency(i.total)}) [{i.zatcaStatus}]</option>)}
                                     </select>
                                 </div>
-                                <button className="btn btn-primary" onClick={triggerZatcaPortalClearance} disabled={isReportingZatca || !zatcaSelectInvoice} style={{ width: '100%' }}>
-                                    <i className="ri-cloud-upload-line" style={{ marginRight: '8px' }}></i>Submit to ZATCA Sandbox
+                                <button className="btn btn-primary" onClick={triggerZatcaPortalClearance} disabled={!zatcaConnected || isReportingZatca || !zatcaSelectInvoice} style={{ width: '100%' }}>
+                                    <i className="ri-cloud-upload-line" style={{ marginRight: '8px' }}></i>{currentLanguage === 'ar' ? 'إرسال إلى هيئة الزكاة' : `Submit to ZATCA (${zatcaConn.env || 'sandbox'})`}
                                 </button>
                             </div>
 
@@ -3185,6 +3247,10 @@ const handleB2BSubmit = () => {
                         {(() => {
                             const activeVat = activeInvoice.vat !== undefined && activeInvoice.vat !== null ? activeInvoice.vat : (activeInvoice.total - (activeInvoice.total / 1.15));
                             const activeSubtotal = activeInvoice.total - activeVat;
+                            // Invoice-level discount (coupon): shown before VAT and spread over the lines
+                            const docDiscount = Number(activeInvoice.discount) || 0;
+                            const docGross = (activeInvoice.items || []).reduce((s, it) => s + (it.price || 0) * (it.qty || 1), 0);
+                            const activeGross = activeSubtotal + docDiscount;
                             return (
                                 <div style={{ display: 'flex', justifyContent: 'center', width: '100%', marginBottom: '20px' }}>
                                 <div id="invoicePrintArea" className={invoiceFormat === 'a4' ? 'invoice-a4-layout' : 'invoice-thermal-layout'} style={{ direction: 'ltr', background: 'white', color: 'black' }}>
@@ -3250,8 +3316,8 @@ const handleB2BSubmit = () => {
                                                     {(activeInvoice.items || []).map((item, idx) => {
                                                         const itemQty = item.qty || 1;
                                                         const itemPrice = item.price || 0;
-                                                        const itemDiscount = 0; 
                                                         const rawSubtotal = itemPrice * itemQty;
+                                                        const itemDiscount = docGross > 0 ? (docDiscount * rawSubtotal / docGross) : 0;
                                                         const itemTaxableAmount = rawSubtotal - itemDiscount;
                                                         const itemTaxRate = settings.taxRate || 15;
                                                         const itemTaxAmount = itemTaxableAmount * (itemTaxRate / 100);
@@ -3356,7 +3422,7 @@ const handleB2BSubmit = () => {
                                                         <tbody>
                                                             <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
                                                                 <td style={{ padding: '4px 6px', fontWeight: 'bold' }}>{currentLanguage === 'ar' ? 'الإجمالي (غير شامل ضريبة القيمة المضافة)' : 'Total (Excluding VAT)'}</td>
-                                                                <td style={{ padding: '4px 6px', textAlign: 'right', fontWeight: 'bold' }}>{formatCurrency(activeSubtotal)}</td>
+                                                                <td style={{ padding: '4px 6px', textAlign: 'right', fontWeight: 'bold' }}>{formatCurrency(activeGross)}</td>
                                                             </tr>
                                                             <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
                                                                 <td style={{ padding: '4px 6px', fontWeight: 'bold' }}>{currentLanguage === 'ar' ? 'مجموع الخصومات' : 'Discount'}</td>
@@ -3431,11 +3497,7 @@ const handleB2BSubmit = () => {
                                             <div style={{ fontSize: '13px', fontWeight: 'bold', lineHeight: '1.6', margin: '10px 0' }}>
                                                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                                                     <span>{currentLanguage === 'ar' ? 'المجموع (غير شامل الضريبة):' : 'Subtotal (Excl. VAT):'}</span>
-                                                    <span>{formatCurrency(activeSubtotal)}</span>
-                                                </div>
-                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                                    <span>{currentLanguage === 'ar' ? 'ضريبة القيمة المضافة (15%):' : 'VAT (15%):'}</span>
-                                                    <span>{formatCurrency(activeVat)}</span>
+                                                    <span>{formatCurrency(activeGross)}</span>
                                                 </div>
                                                 {activeInvoice.discount > 0 && (
                                                     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -3443,6 +3505,10 @@ const handleB2BSubmit = () => {
                                                         <span>-{formatCurrency(activeInvoice.discount)}</span>
                                                     </div>
                                                 )}
+                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                    <span>{currentLanguage === 'ar' ? 'ضريبة القيمة المضافة (15%):' : 'VAT (15%):'}</span>
+                                                    <span>{formatCurrency(activeVat)}</span>
+                                                </div>
                                                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '15px', fontWeight: '900', borderTop: '2px solid #000', paddingTop: '4px', marginTop: '4px' }}>
                                                     <span>{currentLanguage === 'ar' ? 'المجموع (شامل الضريبة):' : 'Total (Incl. VAT):'}</span>
                                                     <span>{formatCurrency(activeInvoice.total)}</span>
@@ -3465,6 +3531,7 @@ const handleB2BSubmit = () => {
                         })()}
 
                         {/* Interactive Buttons */}
+                        {zatcaConnected ? (
                         <div style={{ display: 'flex', gap: '8px', marginBottom: '15px' }}>
                             <button className="btn btn-secondary" style={{ flexGrow: 1, background: '#0284c7', color: 'white' }} onClick={() => downloadXml(activeInvoice)}>
                                 <i className="ri-file-code-line"></i> Download ZATCA XML
@@ -3473,11 +3540,16 @@ const handleB2BSubmit = () => {
                                 <i className="ri-cloud-upload-line"></i> Report to ZATCA
                             </button>
                         </div>
+                        ) : (
+                        <div style={{ marginBottom: '15px', padding: '10px', borderRadius: '6px', border: '1px solid var(--glass-border)', color: 'var(--text-secondary)', fontSize: '13px' }}>
+                            <i className="ri-cloud-off-line"></i> {currentLanguage === 'ar' ? 'هيئة الزكاة: غير متصل. هذه الفاتورة لا تُرسل إلى الهيئة.' : 'ZATCA: Not connected. This invoice is not reported to ZATCA.'}
+                        </div>
+                        )}
 
                         <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', borderTop: '1px solid var(--glass-border)', paddingTop: '12px' }}>
                             <button className="btn btn-secondary" onClick={() => setShowInvoiceModal(false)}>{translations[currentLanguage].close}</button>
                             
-                            <button className="btn btn-primary" onClick={() => window.electronAPI ? window.electronAPI.printPreview() : window.print()}>{translations[currentLanguage].print}</button>
+                            <button className="btn btn-primary" onClick={() => window.print()}>{translations[currentLanguage].print}</button>
                         </div>
                         {showEmailModal && (
                             <div style={{ marginTop: '20px', padding: '15px', background: 'var(--bg-primary)', borderRadius: '8px', border: '1px solid var(--glass-border)' }}>
@@ -3649,7 +3721,7 @@ const handleB2BSubmit = () => {
                         </div>
                         <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '20px', borderTop: '1px solid var(--glass-border)', paddingTop: '12px' }}>
                             <button className="btn btn-secondary" onClick={() => setShowAssetQrModal(false)}>{translations[currentLanguage].close}</button>
-                            <button className="btn btn-primary" onClick={() => window.electronAPI ? window.electronAPI.printPreview() : window.print()}>{translations[currentLanguage].print}</button>
+                            <button className="btn btn-primary" onClick={() => window.print()}>{translations[currentLanguage].print}</button>
                         </div>
                     </div>
                 </div>
@@ -3659,6 +3731,9 @@ const handleB2BSubmit = () => {
             {showQuotationModal && activeQuotation && (() => {
                 const activeVat = activeQuotation.vat !== undefined && activeQuotation.vat !== null ? activeQuotation.vat : (activeQuotation.total - (activeQuotation.total / 1.15));
                 const activeSubtotal = activeQuotation.total - activeVat;
+                const docDiscount = Number(activeQuotation.discount) || 0;
+                const docGross = (activeQuotation.items || []).reduce((s, it) => s + (it.price || 0) * (it.qty || 1), 0);
+                const activeGross = activeSubtotal + docDiscount;
                 return (
                     <div className="modal-overlay">
                         <div className="modal">
@@ -3813,7 +3888,11 @@ const handleB2BSubmit = () => {
                                                     <tbody>
                                                         <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
                                                             <td style={{ padding: '4px 6px', fontWeight: 'bold' }}>Total (Excluding VAT) / الاجمالي (غير شامل ضريبة القيمة المضافة)</td>
-                                                            <td style={{ padding: '4px 6px', textAlign: 'right', fontWeight: 'bold' }}>{formatCurrency(activeSubtotal)}</td>
+                                                            <td style={{ padding: '4px 6px', textAlign: 'right', fontWeight: 'bold' }}>{formatCurrency(activeGross)}</td>
+                                                        </tr>
+                                                        <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
+                                                            <td style={{ padding: '4px 6px', fontWeight: 'bold' }}>Discount / مجموع الخصومات</td>
+                                                            <td style={{ padding: '4px 6px', textAlign: 'right', fontWeight: 'bold' }}>{formatCurrency(docDiscount)}</td>
                                                         </tr>
                                                         <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
                                                             <td style={{ padding: '4px 6px', fontWeight: 'bold' }}>Total Taxable Amount / الاجمالي الخاضع للضريبة</td>
@@ -3881,8 +3960,14 @@ const handleB2BSubmit = () => {
                                         <div style={{ fontSize: '11px', lineHeight: '1.6', margin: '10px 0' }}>
                                             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                                                 <span>Subtotal / المجموع غير شامل الضريبة:</span>
-                                                <span>{formatCurrency(activeSubtotal)}</span>
+                                                <span>{formatCurrency(activeGross)}</span>
                                             </div>
+                                            {docDiscount > 0 && (
+                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                    <span>Discount / الخصم:</span>
+                                                    <span>-{formatCurrency(docDiscount)}</span>
+                                                </div>
+                                            )}
                                             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                                                 <span>VAT (15%) / ضريبة القيمة المضافة:</span>
                                                 <span>{formatCurrency(activeVat)}</span>
@@ -3910,7 +3995,7 @@ const handleB2BSubmit = () => {
 
                             <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', borderTop: '1px solid var(--glass-border)', paddingTop: '12px' }}>
                                 <button className="btn btn-secondary" onClick={() => setShowQuotationModal(false)}>{translations[currentLanguage].close}</button>
-                                <button className="btn btn-primary" onClick={() => window.electronAPI ? window.electronAPI.printPreview() : window.print()}>{translations[currentLanguage].print}</button>
+                                <button className="btn btn-primary" onClick={() => window.print()}>{translations[currentLanguage].print}</button>
                             </div>
                         </div>
                     </div>
@@ -3957,9 +4042,8 @@ const handleB2BSubmit = () => {
             setShowInvoiceModal(false);
         })
         .catch(err => {
-            setInvoices(prev => prev.map(i => i.id === invId ? { ...i, zatcaStatus: 'REPORTED' } : i));
-            alert(isAr ? "تم إرسال الفاتورة وتوثيقها لدى الهيئة (وضع المحاكاة المحلي)!" : ("Invoice reported in local simulation mode: " + err.message));
-            setShowInvoiceModal(false);
+            // Not reported: the invoice keeps its status so it can be sent again
+            alert((isAr ? 'لم يتم إرسال الفاتورة إلى هيئة الزكاة: ' : 'The invoice was NOT reported to ZATCA: ') + err.message);
         });
     }
 }

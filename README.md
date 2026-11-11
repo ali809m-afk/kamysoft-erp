@@ -109,14 +109,18 @@ npm install --production
 Create a `.env` file in the project root:
 
 ```env
-MONGODB_URI=mongodb://localhost:27017/kamysoft-erp
-JWT_SECRET=your-jwt-secret-here
-SAAS_ADMIN_KEY=your-secret-admin-key
+MONGO_URI=mongodb://localhost:27017/kamysoft-erp
+JWT_SECRET=<48+ random characters>
+SAAS_ADMIN_KEY=<16+ random characters>
 PORT=8089
 ```
 
-> The `SAAS_ADMIN_KEY` is what you enter at `yourdomain.com/admin` to log in as the SaaS provider.  
-> Default key (if not set): `kamysoft-saas-admin-2026`
+Generate random values with:
+`node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`
+
+> - `JWT_SECRET` is **required**: the server refuses to start if it is missing, shorter than 32 characters, or a value published in this repository. For local development only, `ALLOW_DEV_SECRETS=true` uses a random secret per run.
+> - The `SAAS_ADMIN_KEY` is what you enter at `yourdomain.com/admin` to log in as the SaaS provider. There is no default: if it is not set, the provider admin API is disabled.
+> - Demo logins (`admin/admin123`, …) are only created when `SEED_DEMO_USERS=true`. Never enable this on a public server.
 
 ---
 
@@ -125,8 +129,9 @@ PORT=8089
 ```bash
 docker build -t kamysoft-erp:latest .
 docker run -d --name kamysoft-erp -p 8089:80 \
-  -e MONGODB_URI=mongodb://host:27017/kamysoft-erp \
-  -e SAAS_ADMIN_KEY=your-secret-key \
+  -e MONGO_URI=mongodb://host:27017/kamysoft-erp \
+  -e JWT_SECRET=<48+ random characters> \
+  -e SAAS_ADMIN_KEY=<16+ random characters> \
   --restart unless-stopped \
   kamysoft-erp:latest
 ```
@@ -156,9 +161,9 @@ cd kamysoft-erp
 
 2. Create a .env file from the sample (or copy the variables below):
 `env
-MONGODB_URI=mongodb://mongo:27017/kamysoft-erp
-JWT_SECRET=development-secret
-SAAS_ADMIN_KEY=development-admin-key
+MONGO_URI=mongodb://mongo:27017/kamysoft-erp
+ALLOW_DEV_SECRETS=true
+SEED_DEMO_USERS=true
 `
 
 3. Start the application using Docker Compose:

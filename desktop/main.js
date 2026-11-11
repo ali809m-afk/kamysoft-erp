@@ -48,6 +48,23 @@ async function startDatabase() {
     // 5. Set upload directory to user data path since ASAR is read-only
     process.env.UPLOADS_DIR = path.join(userDataPath, 'uploads');
 
+    // 6. Login secret: server.js refuses to start without a strong JWT_SECRET.
+    //    Generate one per installation and keep it in the user data folder.
+    if (!process.env.JWT_SECRET) {
+        const secretFile = path.join(userDataPath, 'jwt-secret');
+        let secret = fs.existsSync(secretFile) ? fs.readFileSync(secretFile, 'utf8').trim() : '';
+        if (secret.length < 32) {
+            secret = require('crypto').randomBytes(48).toString('hex');
+            fs.writeFileSync(secretFile, secret, { mode: 0o600 });
+        }
+        process.env.JWT_SECRET = secret;
+    }
+
+    // 7. The offline desktop app keeps its first-run demo logins (local database only)
+    if (process.env.SEED_DEMO_USERS === undefined) {
+        process.env.SEED_DEMO_USERS = 'true';
+    }
+
     // Wait a brief moment for mongod to initialize
     return new Promise(resolve => setTimeout(resolve, 3000));
 }
@@ -100,35 +117,6 @@ app.whenReady().then(async () => {
     // Orchestration Flow
     await startDatabase();
     await startServer();
-
-    ipcMain.handle('print-preview', async (event) => {
-        try {
-            const win = BrowserWindow.fromWebContents(event.sender);
-            const data = await win.webContents.printToPDF({
-                printBackground: true,
-                pageSize: 'A4'
-            });
-            const tempPath = path.join(os.tmpdir(), `kamysoft_invoice_${Date.now()}.pdf`);
-            fs.writeFileSync(tempPath, data);
-            
-            const previewWin = new BrowserWindow({
-                width: 1000,
-                height: 800,
-                title: 'Print Preview',
-                autoHideMenuBar: true,
-                parent: win,
-                modal: true,
-                webPreferences: {
-                    plugins: true
-                }
-            });
-            previewWin.loadURL(`file://${tempPath}`);
-            return { success: true };
-        } catch (e) {
-            console.error('Print preview failed', e);
-            return { success: false, error: e.message };
-        }
-    });
 
     createWindow();
 

@@ -1,5 +1,45 @@
 import React, { useState } from 'react';
 
+// Local calendar day as YYYY-MM-DD (toISOString() would give the UTC day,
+// which is the previous day between 00:00 and 03:00 in Saudi Arabia).
+const localDateKey = (d) => {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
+
+// Work out when an invoice was issued. The POS saves `date` with
+// toLocaleString(), so its format depends on the browser language. Arabic
+// browsers produce Arabic digits and often the Hijri calendar, e.g.
+// "٢٠‏/٥‏/١٤٤٨ هـ ١٠:٣٠:٠٠ م", which new Date() cannot parse.
+export const getInvoiceDate = (inv) => {
+    if (!inv) return null;
+    const raw = typeof inv.date === 'string' ? inv.date.trim() : '';
+
+    // 1. ISO dates (YYYY-MM-DD...) are unambiguous.
+    if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+        const d = new Date(raw.length === 10 ? `${raw}T00:00:00` : raw);
+        if (!isNaN(d.getTime())) return d;
+    }
+
+    // 2. A MongoDB ObjectId records the exact time the invoice was saved.
+    const oid = typeof inv._id === 'string' ? inv._id : inv._id && inv._id.$oid;
+    if (typeof oid === 'string' && /^[0-9a-f]{24}$/i.test(oid)) {
+        return new Date(parseInt(oid.substring(0, 8), 16) * 1000);
+    }
+
+    // 3. Last resort: normalise Arabic digits and markers, then parse.
+    if (!raw || raw.includes('هـ')) return null; // Hijri dates can't be parsed here
+    const normalised = raw
+        .replace(/[٠-٩]/g, (c) => String(c.charCodeAt(0) - 0x0660))
+        .replace(/[۰-۹]/g, (c) => String(c.charCodeAt(0) - 0x06F0))
+        .replace(/[‎‏؜]/g, '')
+        .replace(/،/g, ',')
+        .replace(/\sص$/, ' AM')
+        .replace(/\sم$/, ' PM');
+    const d = new Date(normalised);
+    return isNaN(d.getTime()) ? null : d;
+};
+
 const Reports = (props) => {
     const {
         invoices,
@@ -11,29 +51,27 @@ const Reports = (props) => {
         activeTab
     } = props;
 
-    const [selectedDate, setSelectedDate] = useState(() => {
-        const d = new Date();
-        return d.toISOString().split('T')[0];
-    });
+    const [selectedDate, setSelectedDate] = useState(() => localDateKey(new Date()));
 
     // Dedicated Daily Report View
     if (activeTab === 'dailyReport') {
         const dayInvoices = (invoices || []).filter(inv => {
-            if (!inv.date) return false;
-            // Match ISO YYYY-MM-DD or locale strings containing the date
-            if (inv.date.startsWith(selectedDate)) return true;
-            try {
-                const invD = new Date(inv.date);
-                if (!isNaN(invD.getTime())) {
-                    return invD.toISOString().split('T')[0] === selectedDate;
-                }
-            } catch (e) {}
-            return false;
+            const invD = getInvoiceDate(inv);
+            return invD ? localDateKey(invD) === selectedDate : false;
         });
 
-        const totalDailySales = dayInvoices.reduce((sum, inv) => sum + (Number(inv.total) || 0), 0);
-        const totalDailyVat = dayInvoices.reduce((sum, inv) => sum + (Number(inv.vat) || 0), 0);
+        // Refunded invoices are listed but not counted in the day's totals
+        const isRefunded = (inv) => inv.zatcaStatus === 'REFUNDED';
+        const activeDayInvoices = dayInvoices.filter(inv => !isRefunded(inv));
+        const refundedDayInvoices = dayInvoices.filter(isRefunded);
+        const refundedTotal = refundedDayInvoices.reduce((sum, inv) => sum + (Number(inv.total) || 0), 0);
+
+        const totalDailySales = activeDayInvoices.reduce((sum, inv) => sum + (Number(inv.total) || 0), 0);
+        const totalDailyVat = activeDayInvoices.reduce((sum, inv) => sum + (Number(inv.vat) || 0), 0);
         const netDailySales = totalDailySales - totalDailyVat;
+        // Coupon discounts given on the day's (non-refunded) sales, before VAT
+        const totalDailyDiscount = activeDayInvoices.reduce((sum, inv) => sum + (Number(inv.discount) || 0), 0);
+        const discountedCount = activeDayInvoices.filter(inv => Number(inv.discount) > 0).length;
 
         // Breakdown by payment modes
         const paymentBreakdown = {
@@ -52,8 +90,26 @@ const Reports = (props) => {
             other: 0
         };
 
-        dayInvoices.forEach(inv => {
+        activeDayInvoices.forEach(inv => {
             const method = (inv.paymentMethod || 'cash').toLowerCase();
+            const total = Number(inv.total || 0);
+            // Split payments are saved as "Split / مجزأ (Cash: 50 SAR, Card: 50 SAR)".
+            // Check them first: the text contains "cash", so they used to be counted
+            // entirely as cash. Put the cash part under Cash and the card part under
+            // Mada (شبكة); if the amounts can't be read, keep the invoice under Split.
+            if (method.includes('split')) {
+                const cashMatch = method.match(/cash:\s*([\d.]+)/);
+                const cardMatch = method.match(/card:\s*([\d.]+)/);
+                const cashPart = cashMatch ? parseFloat(cashMatch[1]) : NaN;
+                const cardPart = cardMatch ? parseFloat(cardMatch[1]) : NaN;
+                if (!isNaN(cashPart) && !isNaN(cardPart) && Math.abs(cashPart + cardPart - total) <= 1) {
+                    paymentBreakdown.cash += cashPart;
+                    paymentBreakdown.mada += total - cashPart;
+                } else {
+                    paymentBreakdown.split += total;
+                }
+                return;
+            }
             if (method.includes('cash')) paymentBreakdown.cash += Number(inv.total || 0);
             else if (method.includes('mada')) paymentBreakdown.mada += Number(inv.total || 0);
             else if (method.includes('visa')) paymentBreakdown.visa += Number(inv.total || 0);
@@ -65,14 +121,16 @@ const Reports = (props) => {
             else if (method.includes('hunger')) paymentBreakdown.hungerstation += Number(inv.total || 0);
             else if (method.includes('tabby') || method.includes('tabbi')) paymentBreakdown.tabby += Number(inv.total || 0);
             else if (method.includes('tamara')) paymentBreakdown.tamara += Number(inv.total || 0);
-            else if (method.includes('split')) paymentBreakdown.split += Number(inv.total || 0);
             else paymentBreakdown.other += Number(inv.total || 0);
         });
 
         const deliveryAppsTotal = paymentBreakdown.ninja + paymentBreakdown.keeta + paymentBreakdown.hungerstation;
 
         return (
-            <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            // flexShrink 0 on the page and its sections: the page is a flex item squeezed to
+            // the window height, so sections shrank and their hidden overflow cut off the
+            // payment breakdown cards. Now the page grows and the main area scrolls.
+            <div className="glass-card report-page" style={{ display: 'flex', flexDirection: 'column', gap: '24px', flexShrink: 0 }}>
                 {/* Header & Date Controls */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px', borderBottom: '1px solid var(--glass-border)', paddingBottom: '15px' }}>
                     <div>
@@ -108,6 +166,11 @@ const Reports = (props) => {
                             <div className="stat-info">
                                 <h3>{translations[currentLanguage]?.totalSalesTax || (currentLanguage === 'ar' ? 'إجمالي مبيعات اليوم' : 'Total Daily Sales')}</h3>
                                 <div className="stat-value">{formatCurrency(totalDailySales)}</div>
+                                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                                    {currentLanguage === 'ar'
+                                        ? `الخصومات: ${formatCurrency(totalDailyDiscount)} (${discountedCount} فاتورة)`
+                                        : `Discounts: ${formatCurrency(totalDailyDiscount)} (${discountedCount} invoice${discountedCount === 1 ? '' : 's'})`}
+                                </div>
                             </div>
                             <div className="stat-icon"><i className="ri-money-dollar-circle-line"></i></div>
                         </div>
@@ -126,7 +189,7 @@ const Reports = (props) => {
                     <div className="glass-card gold">
                         <div className="card-stat">
                             <div className="stat-info">
-                                <h3>{currentLanguage === 'ar' ? 'تطبيقات التوصيل (جاهز/هنقر/كيتا/نينجا)' : 'Delivery Apps Total'}</h3>
+                                <h3>{currentLanguage === 'ar' ? 'تطبيقات التوصيل (هنقر/كيتا/نينجا)' : 'Delivery Apps Total'}</h3>
                                 <div className="stat-value">{formatCurrency(deliveryAppsTotal)}</div>
                             </div>
                             <div className="stat-icon"><i className="ri-e-bike-2-line"></i></div>
@@ -137,7 +200,14 @@ const Reports = (props) => {
                         <div className="card-stat">
                             <div className="stat-info">
                                 <h3>{translations[currentLanguage]?.invoiceCount || (currentLanguage === 'ar' ? 'عدد الفواتير' : 'Invoices Count')}</h3>
-                                <div className="stat-value">{dayInvoices.length}</div>
+                                <div className="stat-value">{activeDayInvoices.length}</div>
+                                {refundedDayInvoices.length > 0 && (
+                                    <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                                        {currentLanguage === 'ar'
+                                            ? `+ ${refundedDayInvoices.length} مسترجعة (${formatCurrency(refundedTotal)}) غير محتسبة`
+                                            : `+ ${refundedDayInvoices.length} refunded (${formatCurrency(refundedTotal)}) not counted`}
+                                    </div>
+                                )}
                             </div>
                             <div className="stat-icon"><i className="ri-file-list-3-line"></i></div>
                         </div>
@@ -213,7 +283,7 @@ const Reports = (props) => {
                                 </tr>
                             ) : (
                                 dayInvoices.map(inv => (
-                                    <tr key={inv.id}>
+                                    <tr key={inv.id} style={isRefunded(inv) ? { opacity: 0.55, textDecoration: 'line-through' } : undefined}>
                                         <td><strong>{inv.id}</strong></td>
                                         <td>{inv.date}</td>
                                         <td>{inv.customer || (currentLanguage === 'ar' ? 'عميل نقدي' : 'Cash Customer')}</td>
@@ -221,6 +291,11 @@ const Reports = (props) => {
                                             <span className="status-badge valid" style={{ display: 'inline-block', padding: '2px 8px', borderRadius: '4px', fontSize: '11px' }}>
                                                 {inv.paymentMethod || 'Cash'}
                                             </span>
+                                            {isRefunded(inv) && (
+                                                <span className="status-badge" style={{ display: 'inline-block', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', marginInlineStart: '4px', textDecoration: 'none' }}>
+                                                    {currentLanguage === 'ar' ? 'مسترجعة' : 'Refunded'}
+                                                </span>
+                                            )}
                                         </td>
                                         <td style={{ textAlign: 'right' }}>{formatCurrency((Number(inv.total) || 0) - (Number(inv.vat) || 0))}</td>
                                         <td style={{ textAlign: 'right' }}>{formatCurrency(Number(inv.vat) || 0)}</td>
@@ -237,7 +312,7 @@ const Reports = (props) => {
 
     // Helper to render the standard sales report table (used for salesMovement)
     const renderSalesReport = (reportInvoices) => (
-        <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        <div className="glass-card report-page" style={{ display: 'flex', flexDirection: 'column', gap: '24px', flexShrink: 0 }}>
             {/* Sub Tabs Selection */}
             <div style={{ display: 'flex', gap: '12px', borderBottom: '1px solid var(--glass-border)', paddingBottom: '12px' }}>
                 <button className={`btn ${reportSubTab === 'daily' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setReportSubTab('daily')}>
@@ -336,19 +411,11 @@ const Reports = (props) => {
     if (activeTab === 'salesMovement') {
         // Filter invoices according to the selected sub‑tab (daily / monthly / annual)
         const now = new Date();
-        const todayStr = now.toLocaleDateString();
         const currentMonth = now.getMonth();
         const currentYear = now.getFullYear();
-        const reportInvoices = invoices.filter(inv => {
-            if (!inv.date) return false;
-            const invDate = new Date(inv.date);
-            if (isNaN(invDate.getTime())) {
-                // Fallback for malformed dates – simple string checks
-                if (reportSubTab === 'daily') return inv.date.includes(todayStr);
-                if (reportSubTab === 'monthly') return inv.date.includes(`/${currentMonth + 1}/`) || inv.date.includes(`-${currentMonth + 1}-`);
-                if (reportSubTab === 'annual') return inv.date.includes(String(currentYear));
-                return false;
-            }
+        const reportInvoices = (invoices || []).filter(inv => {
+            const invDate = getInvoiceDate(inv);
+            if (!invDate) return false;
             if (reportSubTab === 'daily') return invDate.toDateString() === now.toDateString();
             if (reportSubTab === 'monthly') return invDate.getMonth() === currentMonth && invDate.getFullYear() === currentYear;
             if (reportSubTab === 'annual') return invDate.getFullYear() === currentYear;

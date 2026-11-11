@@ -463,6 +463,39 @@ const Settings = (props) => {
                                     })()} readOnly style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }} />
                                 </div>
                             </div>
+                            {/* ZATCA mode: Connected (sign + report) or Not connected (no signing/reporting) */}
+                            <div className="form-group" style={{ marginBottom: '18px' }}>
+                                <label>{currentLanguage === 'ar' ? 'وضع الربط مع هيئة الزكاة' : 'ZATCA mode'}</label>
+                                <div role="radiogroup" aria-label={currentLanguage === 'ar' ? 'وضع الربط مع هيئة الزكاة' : 'ZATCA mode'} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px', marginTop: '6px' }}>
+                                    {[
+                                        { id: 'connected', icon: 'ri-cloud-line',
+                                          title: currentLanguage === 'ar' ? 'متصل بهيئة الزكاة' : 'ZATCA connected',
+                                          text: currentLanguage === 'ar' ? 'تُوقّع الفواتير (المرحلة الثانية) وتُرسل إلى الهيئة تلقائياً أو يدوياً.' : 'Invoices are signed (Phase 2) and reported to ZATCA, automatically or by hand.' },
+                                        { id: 'not_connected', icon: 'ri-cloud-off-line',
+                                          title: currentLanguage === 'ar' ? 'غير متصل' : 'Not connected',
+                                          text: currentLanguage === 'ar' ? 'لا توقيع ولا إرسال. تحمل الفاتورة رمز QR الأساسي (البائع، الرقم الضريبي، الوقت، الإجمالي، الضريبة).' : 'No signing or reporting. Invoices carry the basic QR (seller, VAT number, time, total, VAT).' }
+                                    ].map(opt => {
+                                        const selected = (zatcaConn?.mode || 'connected') === opt.id;
+                                        return (
+                                            <button
+                                                key={opt.id}
+                                                type="button"
+                                                role="radio"
+                                                aria-checked={selected}
+                                                onClick={() => setZatcaConn({ ...zatcaConn, mode: opt.id })}
+                                                style={{ textAlign: 'start', padding: '12px', borderRadius: '8px', border: `2px solid ${selected ? 'var(--accent-cyan)' : 'var(--glass-border)'}`, background: selected ? 'rgba(6, 182, 212, 0.08)' : 'transparent' }}
+                                            >
+                                                <div style={{ fontWeight: 'bold', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                    <i className={opt.icon}></i> {opt.title} {selected && <i className="ri-check-line" style={{ color: 'var(--accent-cyan)' }}></i>}
+                                                </div>
+                                                <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{opt.text}</div>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            {(zatcaConn?.mode || 'connected') === 'connected' && (<>
                             <div className="form-group">
                                 <label>{translations[currentLanguage].zatcaEnv || 'ZATCA Environment'}</label>
                                 <select className="form-control" value={zatcaConn?.env || 'sandbox'} onChange={e => {
@@ -547,6 +580,12 @@ const Settings = (props) => {
                                     {translations[currentLanguage].registerDevice || 'Register Device'}
                                 </button>
                             </div>
+                            </>)}
+
+                            {/* The form had no submit button, so ZATCA settings only saved when Enter was pressed */}
+                            <button type="submit" className="btn btn-primary" style={{ width: '100%', marginTop: '14px' }}>
+                                <i className="ri-save-line"></i> {currentLanguage === 'ar' ? 'حفظ إعدادات هيئة الزكاة' : 'Save ZATCA settings'}
+                            </button>
                         </form>
                     </div>
                 )}

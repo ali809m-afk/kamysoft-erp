@@ -1,4 +1,5 @@
 import React from 'react';
+import { getInvoiceDate } from '../reports/Reports';
 
 const Invoices = (props) => {
     const { 
@@ -6,7 +7,7 @@ const Invoices = (props) => {
         salesEndDate, setSalesEndDate, formatCurrency, setActiveTab, currentLanguage, translations,
         handlePrintInvoice, handleDeleteInvoice, setInvoices,
         setInvoiceFormat, setInvoiceSource, setActiveInvoice, setShowInvoiceModal,
-        simulateZATCAReporting, handleRefundInvoice
+        simulateZATCAReporting, handleRefundInvoice, zatcaConnected
     } = props;
 
     {/* TAB: INVOICES & REPRINT (SALES MANAGEMENT) */}
@@ -21,11 +22,7 @@ const Invoices = (props) => {
                             inv.id.toLowerCase().includes(salesSearch.toLowerCase()) || 
                             (inv.customer && inv.customer.toLowerCase().includes(salesSearch.toLowerCase()));
                             
-                        let invDateObj = null;
-                        if (inv.date) {
-                            const datePart = inv.date.split(',')[0] || inv.date;
-                            invDateObj = new Date(datePart);
-                        }
+                        const invDateObj = getInvoiceDate(inv);
                         
                         let matchesStartDate = true;
                         if (salesStartDate && invDateObj) {
@@ -176,6 +173,10 @@ const Invoices = (props) => {
                                                     } else if (inv.zatcaStatus === 'PENDING') {
                                                         statusBadgeClass = 'gold';
                                                         statusLabel = currentLanguage === 'ar' ? 'معلق الزكاة' : 'PENDING ZATCA';
+                                                    } else if (inv.zatcaStatus === 'NOT_CONNECTED') {
+                                                        // Made while ZATCA mode was "Not connected": never sent to ZATCA
+                                                        statusBadgeClass = 'blue';
+                                                        statusLabel = currentLanguage === 'ar' ? 'غير مرسل (غير متصل)' : 'NOT SENT (ZATCA OFF)';
                                                     } else {
                                                         statusLabel = currentLanguage === 'ar' ? 'نشط' : 'ACTIVE';
                                                     }
@@ -196,7 +197,7 @@ const Invoices = (props) => {
                                                                     <button className="btn btn-secondary" title={currentLanguage === 'ar' ? 'عرض وطباعة بتنسيق A4' : 'View & Print A4 Invoice'} onClick={() => { setInvoiceFormat('a4'); setInvoiceSource('sales'); setActiveInvoice(inv); setShowInvoiceModal(true); }}>
                                                                         <i className="ri-printer-line"></i>
                                                                     </button>
-                                                                    {inv.zatcaStatus !== 'REPORTED' && inv.zatcaStatus !== 'REFUNDED' && (
+                                                                    {zatcaConnected !== false && !['REPORTED', 'REFUNDED', 'NOT_CONNECTED'].includes(inv.zatcaStatus) && (
                                                                         <button className="btn btn-secondary" style={{ color: 'var(--accent-cyan)' }} title={currentLanguage === 'ar' ? 'إرسال لهيئة الزكاة' : 'Submit to ZATCA'} onClick={() => {
                                                                             simulateZATCAReporting(inv.id);
                                                                         }}>

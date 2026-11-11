@@ -8,19 +8,12 @@ data:
   PORT: "8089"
   MONGO_URI: "mongodb://mongodb:27017/kamysoft-erp"
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: kamysoft-erp-secrets
-  labels:
-    app: kamysoft-erp
-type: Opaque
-data:
-  # Base64 encoded values. Replace these with your own secrets:
-  # JWT_SECRET: base64 of 'kamysoft_super_secret_key_2026'
-  # SAAS_ADMIN_KEY: base64 of 'kamysoft-saas-admin-2026'
-  JWT_SECRET: a2FteXNvZnRfc3VwZXJfc2VjcmV0X2tleV8yMDI2
-  SAAS_ADMIN_KEY: a2FteXNvZnQtc2Fhcy1hZG1pbi0yMDI2
+# The "kamysoft-erp-secrets" Secret (JWT_SECRET, SAAS_ADMIN_KEY) is NOT stored in
+# this repository. The deploy workflow creates it from the GitHub Actions secrets
+# KAMYSOFT_JWT_SECRET and KAMYSOFT_SAAS_ADMIN_KEY. To create it by hand:
+#   kubectl create secret generic kamysoft-erp-secrets \
+#     --from-literal=JWT_SECRET="<48+ random chars>" \
+#     --from-literal=SAAS_ADMIN_KEY="<random key>"
 ---
 apiVersion: apps/v1
 kind: Deployment

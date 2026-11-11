@@ -1,5 +1,4 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-contextBridge.exposeInMainWorld('electronAPI', {
-    printPreview: () => ipcRenderer.invoke('print-preview')
-});
+// The print-preview popup was removed: printing uses the page's own print dialog (window.print()).
+contextBridge.exposeInMainWorld('electronAPI', {});

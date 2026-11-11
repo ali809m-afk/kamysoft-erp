@@ -13,6 +13,19 @@ jobs:
       packages: write
 
     steps:
+      - name: Check required app secrets are configured
+        env:
+          KAMYSOFT_JWT_SECRET: ${{ secrets.KAMYSOFT_JWT_SECRET }}
+          KAMYSOFT_SAAS_ADMIN_KEY: ${{ secrets.KAMYSOFT_SAAS_ADMIN_KEY }}
+        run: |
+          if [ ${#KAMYSOFT_JWT_SECRET} -lt 32 ]; then
+            echo "::error::Add a repository secret KAMYSOFT_JWT_SECRET (32+ random characters). The server will not start without it."
+            exit 1
+          fi
+          if [ ${#KAMYSOFT_SAAS_ADMIN_KEY} -lt 16 ]; then
+            echo "::warning::KAMYSOFT_SAAS_ADMIN_KEY is not set (16+ characters); the /admin provider panel will be disabled."
+          fi
+
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -77,6 +90,7 @@ jobs:
               export KUBECONFIG=/root/.kube/config
             fi
             kubectl --insecure-skip-tls-verify --validate=false create secret generic cloudflare-secrets --from-literal=CF_API_TOKEN=\"${{ secrets.CF_API_TOKEN }}\" --from-literal=CF_ACCOUNT_ID=\"${{ secrets.CF_ACCOUNT_ID }}\" --from-literal=CF_TUNNEL_ID=\"${{ secrets.CF_TUNNEL_ID }}\" --dry-run=client -o yaml | kubectl --insecure-skip-tls-verify --validate=false apply -f -
+            kubectl --insecure-skip-tls-verify --validate=false create secret generic kamysoft-erp-secrets --from-literal=JWT_SECRET=\"${{ secrets.KAMYSOFT_JWT_SECRET }}\" --from-literal=SAAS_ADMIN_KEY=\"${{ secrets.KAMYSOFT_SAAS_ADMIN_KEY }}\" --dry-run=client -o yaml | kubectl --insecure-skip-tls-verify --validate=false apply -f -
             kubectl --insecure-skip-tls-verify --validate=false apply -f /home/cloud/kamysoft-erp/k8s/
             kubectl --insecure-skip-tls-verify rollout restart deployment/kamysoft-erp
           "'
