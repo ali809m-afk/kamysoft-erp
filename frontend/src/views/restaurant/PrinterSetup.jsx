@@ -2,9 +2,9 @@ import React, { useState, useEffect } from 'react';
 
 // Category '*' = fallback printer for every category without its own printer
 const FALLBACK = '*';
-const emptyForm = { category: '', name: '', ip: '', port: 9100, brand: 'Epson', model: 'epson-generic' };
+const emptyForm = { category: '', name: '', station: 'kitchen', ip: '', port: 9100, brand: 'Epson', model: 'epson-generic' };
 
-const PrinterSetup = ({ currentLanguage, translations, headers, products = [] }) => {
+const PrinterSetup = ({ currentLanguage, translations, headers, products = [], setHasJuicePrinter }) => {
     const ar = currentLanguage === 'ar';
     const [configs, setConfigs] = useState([]);
     const [form, setForm] = useState(emptyForm);
@@ -97,9 +97,17 @@ const PrinterSetup = ({ currentLanguage, translations, headers, products = [] })
     const fetchConfigs = () => {
         fetch('/api/printers', { headers })
             .then(res => res.json())
-            .then(data => setConfigs(Array.isArray(data) ? data : []))
+            .then(data => {
+                const list = Array.isArray(data) ? data : [];
+                setConfigs(list);
+                // Show or hide the POS "Send Juices" button
+                if (setHasJuicePrinter) setHasJuicePrinter(list.some(p => p.station === 'juice'));
+            })
             .catch(err => console.error(err));
     };
+    const stationLabel = (s) => (s === 'juice'
+        ? (ar ? 'زر العصائر (منفصل)' : 'Juice button (separate)')
+        : (ar ? 'زر المطبخ (الرئيسي)' : 'Kitchen button (main)'));
 
     useEffect(() => {
         fetchConfigs();
@@ -149,8 +157,8 @@ const PrinterSetup = ({ currentLanguage, translations, headers, products = [] })
             <h2>{ar ? 'إعدادات طابعات المطبخ' : 'Kitchen Printer Setup'}</h2>
             <p style={{ color: 'var(--text-secondary)', fontSize: '13px', margin: '6px 0 14px' }}>
                 {ar
-                    ? 'كل فئة أصناف تُطبع على طابعتها (مثلاً المشويات في المطبخ والمشروبات في البار). أضف طابعة "كل الأصناف الأخرى" لتُطبع عليها أي فئة بدون طابعة. يمكن ربط أكثر من فئة بنفس الطابعة.'
-                    : 'Each product category prints on its own printer (e.g. grills in the kitchen, drinks at the bar). Add an "All other items" printer to catch every category without one. Several categories can share one printer.'}
+                    ? 'كل فئة أصناف تُطبع على طابعتها (مثلاً المشويات في المطبخ والمشروبات في البار). أضف طابعة "كل الأصناف الأخرى" لتُطبع عليها أي فئة بدون طابعة. يمكن ربط أكثر من فئة بنفس الطابعة. الطابعات المربوطة بـ"زر المطبخ" تُطبع معاً بضغطة واحدة، وطابعة العصائر تُطبع من زر "إرسال العصائر" المنفصل.'
+                    : 'Each product category prints on its own printer (e.g. grills in the kitchen, drinks at the bar). Add an "All other items" printer to catch every category without one. Several categories can share one printer. Printers on the "Kitchen button" all print together with one press; the Juice printer prints only from the separate "Send Juices" button.'}
             </p>
 
             <div className="glass-card" style={{ marginBottom: '20px' }}>
@@ -185,6 +193,16 @@ const PrinterSetup = ({ currentLanguage, translations, headers, products = [] })
                         onChange={e => setForm({ ...form, name: e.target.value })}
                         style={{ flex: 1, minWidth: '140px' }}
                     />
+                    <select
+                        className="form-control"
+                        aria-label={ar ? 'زر الطباعة في نقطة البيع' : 'POS button that prints here'}
+                        value={form.station || 'kitchen'}
+                        onChange={e => setForm({ ...form, station: e.target.value })}
+                        style={{ minWidth: '190px', flex: 1 }}
+                    >
+                        <option value="kitchen">{stationLabel('kitchen')}</option>
+                        <option value="juice">{stationLabel('juice')}</option>
+                    </select>
                     <input 
                         type="text" 
                         placeholder="IP Address (e.g., 192.168.1.100)" 
@@ -244,6 +262,7 @@ const PrinterSetup = ({ currentLanguage, translations, headers, products = [] })
                         <tr>
                             <th>{ar ? 'الفئة' : 'Category'}</th>
                             <th>{ar ? 'الطابعة' : 'Printer'}</th>
+                            <th>{ar ? 'الزر' : 'Button'}</th>
                             <th>{ar ? 'الطراز' : 'Model'}</th>
                             <th>{ar ? 'عنوان IP' : 'IP Address'}</th>
                             <th>{ar ? 'المنفذ' : 'Port'}</th>
@@ -255,6 +274,7 @@ const PrinterSetup = ({ currentLanguage, translations, headers, products = [] })
                             <tr key={config.category}>
                                 <td>{categoryLabel(config.category)}</td>
                                 <td>{config.name || '-'}</td>
+                                <td>{stationLabel(config.station)}</td>
                                 <td>{allModels.find(p => p.id === config.model)?.name || config.model || 'Generic Printer'}</td>
                                 <td>{config.ip}</td>
                                 <td>{config.port}</td>
@@ -262,7 +282,7 @@ const PrinterSetup = ({ currentLanguage, translations, headers, products = [] })
                                     <button className="action-btn" title={ar ? 'طباعة تجريبية' : 'Test print'} aria-label={ar ? 'طباعة تجريبية' : 'Test print'} onClick={() => handleTest(config)} disabled={!!testing}>
                                         <i className={testing === config.category ? 'ri-loader-4-line' : 'ri-printer-line'}></i>
                                     </button>
-                                    <button className="action-btn" title={ar ? 'تعديل' : 'Edit'} aria-label={ar ? 'تعديل' : 'Edit'} onClick={() => setForm({ ...emptyForm, ...config, name: config.name || '', brand: config.brand || 'Epson', model: config.model || 'epson-generic' })}>
+                                    <button className="action-btn" title={ar ? 'تعديل' : 'Edit'} aria-label={ar ? 'تعديل' : 'Edit'} onClick={() => setForm({ ...emptyForm, ...config, name: config.name || '', station: config.station || 'kitchen', brand: config.brand || 'Epson', model: config.model || 'epson-generic' })}>
                                         <i className="ri-edit-line"></i>
                                     </button>
                                     <button className="action-btn delete" title={ar ? 'حذف' : 'Delete'} aria-label={ar ? 'حذف' : 'Delete'} onClick={() => handleDelete(config.category)}>
@@ -273,7 +293,7 @@ const PrinterSetup = ({ currentLanguage, translations, headers, products = [] })
                         ))}
                         {configs.length === 0 && (
                             <tr>
-                                <td colSpan="6" style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
+                                <td colSpan="7" style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
                                     {ar ? 'لا توجد طابعات مضافة' : 'No printers configured'}
                                 </td>
                             </tr>

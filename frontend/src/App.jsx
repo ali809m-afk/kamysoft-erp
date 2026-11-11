@@ -771,6 +771,7 @@ export default function App() {
 
     const [zatcaConn, setZatcaConn] = useState({
         env: 'sandbox',
+        mode: 'connected',
         endpoint: 'https://developer.zatca.gov.sa/api/v2/invoice',
         clientId: 'test-client-id-1092837',
         clientSecret: '••••••••••••••••••••••••',
@@ -778,6 +779,10 @@ export default function App() {
         status: 'CONNECTED',
         autoSend: true,
     });
+    // ZATCA mode (Settings > ZATCA): 'connected' signs and reports invoices, 'not_connected' does neither
+    const zatcaConnected = ((zatcaConn && zatcaConn.mode) || 'connected') === 'connected';
+    // Restaurant: is a printer assigned to the separate Juice button?
+    const [hasJuicePrinter, setHasJuicePrinter] = useState(false);
 
     const [reportSubTab, setReportSubTab] = useState('daily');
     const [quotations, setQuotations] = useState([]);
@@ -956,6 +961,7 @@ export default function App() {
         fetch('/api/orders', { headers }).then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setOrders(data)).catch(() => {});
         fetch('/api/users', { headers }).then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => { if (Array.isArray(data)) setUsersList(data); }).catch(() => {});
         fetch('/api/quotations', { headers }).then(res => { if (!res.ok) throw new Error(); return res.json(); }).then(data => setQuotations(data.filter((v,i,a)=>a.findIndex(t=>t.id===v.id)===i))).catch(() => {});
+        fetch('/api/printers', { headers }).then(res => res.ok ? res.json() : []).then(list => setHasJuicePrinter(Array.isArray(list) && list.some(p => p.station === 'juice'))).catch(() => {});
     }, [token]);
 
     // Apply configurations on load
@@ -1361,11 +1367,12 @@ export default function App() {
 
     // Saves the table, then sends only new / changed items to the kitchen printers.
     // Tells the cashier which printers worked, which failed and which items have no printer.
-    const handleFireToKitchen = () => {
+    // station 'kitchen' = main Fire button (Main + Kitchen printers); 'juice' = separate Juice button
+    const handleFireToKitchen = (station = 'kitchen') => {
         saveRestaurantOrder()
             .then(saved => {
                 if (!saved) return;
-                return fetch(`/api/restaurant/orders/${saved.id}/print-kot`, { method: 'POST', headers })
+                return fetch(`/api/restaurant/orders/${saved.id}/print-kot`, { method: 'POST', headers, body: JSON.stringify({ station }) })
                     .then(res => res.json())
                     .then(printRes => {
                         const ar = currentLanguage === 'ar';
@@ -1377,9 +1384,15 @@ export default function App() {
                             lines.push((ar ? 'بدون طابعة: ' : 'No printer for: ') + printRes.unrouted.map(u => `${u.name}${u.category ? ` [${u.category}]` : ''}`).join(', '));
                         }
                         if (printRes.error) lines.push(printRes.error);
+                        const isJuice = station === 'juice';
+                        if ((printRes.waitingForOtherButton || []).length > 0) {
+                            lines.push((isJuice
+                                ? (ar ? 'بانتظار زر المطبخ: ' : 'Waiting for the Kitchen button: ')
+                                : (ar ? 'بانتظار زر العصائر: ' : 'Waiting for the Juice button: ')) + printRes.waitingForOtherButton.map(w => w.name).join(', '));
+                        }
                         let title;
-                        if (printRes.message === 'No new items to print') title = ar ? 'لا توجد أصناف جديدة للمطبخ' : 'No new items to send to the kitchen';
-                        else if (printRes.success) title = ar ? 'تم إرسال الطلب للمطبخ' : 'Order fired to kitchen';
+                        if (printRes.message) title = isJuice ? (ar ? 'لا توجد عصائر جديدة' : 'No new juice items') : (ar ? 'لا توجد أصناف جديدة للمطبخ' : 'No new items to send to the kitchen');
+                        else if (printRes.success) title = isJuice ? (ar ? 'تم إرسال العصائر' : 'Juices sent') : (ar ? 'تم إرسال الطلب للمطبخ' : 'Order fired to kitchen');
                         else title = ar ? 'لم تتم طباعة كل الأصناف. أعد الإرسال بعد إصلاح الطابعة؛ ستُطبع الأصناف غير المطبوعة فقط.' : 'Not everything printed. Fire again after fixing the printer; only the unprinted items will be sent.';
                         alert([title, ...lines].join('\n'));
                         // The order is saved either way; unprinted items stay pending on the table
@@ -1457,16 +1470,17 @@ export default function App() {
             setManualDiscount(d => ({ ...d, value: '' }));
             setCouponInput('');
 
-            if (zatcaConn.autoSend) {
+            if (zatcaConnected && zatcaConn.autoSend) {
                 fetch(`/api/invoices/${newInv.id}/zatca-report`, { method: 'POST', headers: headers })
-                .then(() => {
-                    setInvoices(prev => prev.map(i => i.id === newInv.id ? { ...i, zatcaStatus: 'REPORTED' } : i));
-                    setActiveInvoice(prev => prev && prev.id === newInv.id ? { ...prev, zatcaStatus: 'REPORTED' } : prev);
+                .then(res => res.json().then(data => ({ ok: res.ok, data })))
+                .then(({ ok, data }) => {
+                    // Only mark REPORTED when ZATCA accepted it; otherwise it stays PENDING to retry
+                    if (!ok) { console.warn('ZATCA auto-send failed:', data.error); return; }
+                    const status = data.zatcaStatus || 'REPORTED';
+                    setInvoices(prev => prev.map(i => i.id === newInv.id ? { ...i, zatcaStatus: status, qrCode: data.qrCode || i.qrCode } : i));
+                    setActiveInvoice(prev => prev && prev.id === newInv.id ? { ...prev, zatcaStatus: status, qrCode: data.qrCode || prev.qrCode } : prev);
                 })
-                .catch(() => {
-                    setInvoices(prev => prev.map(i => i.id === newInv.id ? { ...i, zatcaStatus: 'REPORTED' } : i));
-                    setActiveInvoice(prev => prev && prev.id === newInv.id ? { ...prev, zatcaStatus: 'REPORTED' } : prev);
-                });
+                .catch(err => console.warn('ZATCA auto-send failed:', err.message));
             }
         })
         .catch(() => {
@@ -1490,10 +1504,7 @@ export default function App() {
             setManualDiscount(d => ({ ...d, value: '' }));
             setCouponInput('');
 
-            if (zatcaConn.autoSend) {
-                setInvoices(prev => prev.map(i => i.id === mockInv.id ? { ...i, zatcaStatus: 'REPORTED' } : i));
-                setActiveInvoice(prev => prev && prev.id === mockInv.id ? { ...prev, zatcaStatus: 'REPORTED' } : prev);
-            }
+            // Not saved on the server, so it can't have been reported to ZATCA
         });
     };
     
@@ -1848,12 +1859,9 @@ const handleB2BSubmit = () => {
                     appendLog("SUCCESS", "Tax Invoice cryptographically signed & registered in ZATCA portal.", 200);
                     setIsReportingZatca(false);
                 })
-                .catch(() => {
-                    // Fallback
-                    const updated = invoices.map(i => i.id === inv.id ? { ...i, zatcaStatus: 'REPORTED' } : i);
-                    setInvoices(updated);
-                    appendLog("SUCCESS", "HTTP/1.1 200 OK | Response: CLEARED & APPROVED (Fallback Mode)", 100);
-                    appendLog("SUCCESS", "Simplified Tax Invoice registered in ZATCA database.", 200);
+                .catch((err) => {
+                    // Not reported: keep the invoice's status so it can be retried
+                    appendLog("ERROR", `ZATCA reporting failed: ${err.message}`, 100);
                     setIsReportingZatca(false);
                 });
         }, 3600);
@@ -2446,7 +2454,7 @@ const handleB2BSubmit = () => {
         );
     }
 
-    const props = { generateZatcaQR, handleHoldTable, handleFireToKitchen, loadCartFromOrder, handleB2BAddItem, setHostname, products, settings, activeCoupon, manualDiscount, setManualDiscount, getCartDiscount, handleLaunchApp, simulatedDomain, setQuotations, setAuthError, handleB2BItemChange, loginUsername, calculateAssetValues, handleDeleteExpense, handleSaveQuotation, handleB2BRemoveItem, simulatedTenant, setReportSubTab, handleRefundInvoice, handleRegisterSuccess, setServiceDuration, activeCustomer, setLoginPassword, setMobileMenuOpen, setZatcaConsole, zatcaSelectInvoice, setShowAssetModal, invoices, setUser, setTableNum, quotations, quotationForm, currentLanguage, showAssetQrModal, posFilter, setToken, setInvoiceSource, showCustomerModal, salesStartDate, usersList, setSplitCard, activeTab, downloadXml, setActiveInvoice, setActiveAssetForQr, setCustForm, couponInput, setInvoiceFormat, splitCash, setShowOrderModal, setPosFilter, setSalesEndDate, setShowAssetQrModal, showOrderModal, applyCoupon, handleSaveOrder, setZatcaConn, zatcaConsole, setQuotationForm, setOrderForm, handleSaveQuotationFromCart, setShowCustomerModal, handleDeleteOrder, setSimulatedDomain, setShowExpenseModal, setB2bForm, expenses, isReportingZatca, showQuotationModal, setCurrentLanguage, reportSubTab, handleSaveUser, setProducts, orders, handleSaveAsset, setSalesSearch, setEmployees, handleB2BSubmit, customers, setExpForm, orderForm, setCustomers, serviceDuration, assets, showUserModal, getBaseDomain, activeQuotation, updateCartQty, setActiveCustomer, simulateZATCAReporting, setZatcaSelectInvoice, user, setSuppliers, handleLogin, handleSaveCustomer, invoiceFormat, setCart, setPosSearch, activeAssetForQr, hostname, setActiveQuotation, custForm, splitCard, suppliers, addToCart, authError, zatcaConn, setOrders, setLoginUsername, handleDeleteCustomer, setActiveTab, handleSaveExpense, handleDeleteQuotation, setTheme, userForm, expForm, salesSearch, setSplitCash, setSalesStartDate, salesEndDate, invoiceSource, b2bForm, isAllowedTab, triggerZatcaPortalClearance, setSimulatedTenant, setShowQuotationModal, setPaymentMethod, setExpenses, setShowQuotationCrudModal, setShowInvoiceModal, processCheckout, setUsersList, setIsReportingZatca, posSearch, showInvoiceModal, setAssetForm, getPaymentMethodLabel, formatCurrency, handleLogout, setInvoices, tableNum, setSettings, cart, setActiveCoupon, mobileMenuOpen, paymentMethod, assetForm, showExpenseModal, token, employees, setShowUserModal, showAssetModal, setUserForm, loginPassword, handleDeleteUser, theme, setCouponInput, setAssets, activeInvoice, showQuotationCrudModal, translations, headers, units, setUnits };
+    const props = { generateZatcaQR, handleHoldTable, handleFireToKitchen, hasJuicePrinter, setHasJuicePrinter, zatcaConnected,loadCartFromOrder, handleB2BAddItem, setHostname, products, settings, activeCoupon, manualDiscount, setManualDiscount, getCartDiscount, handleLaunchApp, simulatedDomain, setQuotations, setAuthError, handleB2BItemChange, loginUsername, calculateAssetValues, handleDeleteExpense, handleSaveQuotation, handleB2BRemoveItem, simulatedTenant, setReportSubTab, handleRefundInvoice, handleRegisterSuccess, setServiceDuration, activeCustomer, setLoginPassword, setMobileMenuOpen, setZatcaConsole, zatcaSelectInvoice, setShowAssetModal, invoices, setUser, setTableNum, quotations, quotationForm, currentLanguage, showAssetQrModal, posFilter, setToken, setInvoiceSource, showCustomerModal, salesStartDate, usersList, setSplitCard, activeTab, downloadXml, setActiveInvoice, setActiveAssetForQr, setCustForm, couponInput, setInvoiceFormat, splitCash, setShowOrderModal, setPosFilter, setSalesEndDate, setShowAssetQrModal, showOrderModal, applyCoupon, handleSaveOrder, setZatcaConn, zatcaConsole, setQuotationForm, setOrderForm, handleSaveQuotationFromCart, setShowCustomerModal, handleDeleteOrder, setSimulatedDomain, setShowExpenseModal, setB2bForm, expenses, isReportingZatca, showQuotationModal, setCurrentLanguage, reportSubTab, handleSaveUser, setProducts, orders, handleSaveAsset, setSalesSearch, setEmployees, handleB2BSubmit, customers, setExpForm, orderForm, setCustomers, serviceDuration, assets, showUserModal, getBaseDomain, activeQuotation, updateCartQty, setActiveCustomer, simulateZATCAReporting, setZatcaSelectInvoice, user, setSuppliers, handleLogin, handleSaveCustomer, invoiceFormat, setCart, setPosSearch, activeAssetForQr, hostname, setActiveQuotation, custForm, splitCard, suppliers, addToCart, authError, zatcaConn, setOrders, setLoginUsername, handleDeleteCustomer, setActiveTab, handleSaveExpense, handleDeleteQuotation, setTheme, userForm, expForm, salesSearch, setSplitCash, setSalesStartDate, salesEndDate, invoiceSource, b2bForm, isAllowedTab, triggerZatcaPortalClearance, setSimulatedTenant, setShowQuotationModal, setPaymentMethod, setExpenses, setShowQuotationCrudModal, setShowInvoiceModal, processCheckout, setUsersList, setIsReportingZatca, posSearch, showInvoiceModal, setAssetForm, getPaymentMethodLabel, formatCurrency, handleLogout, setInvoices, tableNum, setSettings, cart, setActiveCoupon, mobileMenuOpen, paymentMethod, assetForm, showExpenseModal, token, employees, setShowUserModal, showAssetModal, setUserForm, loginPassword, handleDeleteUser, theme, setCouponInput, setAssets, activeInvoice, showQuotationCrudModal, translations, headers, units, setUnits };
 
     const b2bProductOptions = products.map(p => (
         <option key={p.id} value={p.id}>{currentLanguage === 'ar' ? p.nameAR : p.nameEN}</option>
@@ -3134,13 +3142,21 @@ const handleB2BSubmit = () => {
                     <div className="glass-card">
                         <h3 style={{ marginBottom: '15px' }}>{translations[currentLanguage].zatcaPortal}</h3>
                         <div className="card-grid" style={{ marginBottom: '24px' }}>
-                            <div className="glass-card green">
+                            {/* Shows the real ZATCA mode (it used to always say "Compliant & Active") */}
+                            <div className={`glass-card ${zatcaConnected ? 'green' : ''}`}>
                                 <div className="card-stat">
                                     <div className="stat-info">
-                                        <h3>ZATCA Clearance Status</h3>
-                                        <div style={{ color: 'var(--accent-success)', fontWeight: 'bold' }}>UBL 2.1 Compliant & Active</div>
+                                        <h3>{currentLanguage === 'ar' ? 'وضع الربط مع هيئة الزكاة' : 'ZATCA mode'}</h3>
+                                        <div style={{ color: zatcaConnected ? 'var(--accent-success)' : 'var(--text-secondary)', fontWeight: 'bold' }}>
+                                            {zatcaConnected
+                                                ? (currentLanguage === 'ar' ? `متصل (${zatcaConn.env || 'sandbox'})` : `Connected (${zatcaConn.env || 'sandbox'})`)
+                                                : (currentLanguage === 'ar' ? 'غير متصل: لا تُرسل الفواتير إلى الهيئة' : 'Not connected: invoices are not reported')}
+                                        </div>
+                                        <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                                            {currentLanguage === 'ar' ? 'غيّر الوضع من الإعدادات العامة ← إعدادات هيئة الزكاة' : 'Change it in General Settings → ZATCA Connection Settings'}
+                                        </div>
                                     </div>
-                                    <div className="stat-icon"><i className="ri-checkbox-circle-line"></i></div>
+                                    <div className="stat-icon"><i className={zatcaConnected ? 'ri-checkbox-circle-line' : 'ri-cloud-off-line'}></i></div>
                                 </div>
                             </div>
                         </div>
@@ -3155,8 +3171,8 @@ const handleB2BSubmit = () => {
                                         {invoices.map(i => <option key={i.id} value={i.id}>{i.id} - {i.customer} ({formatCurrency(i.total)}) [{i.zatcaStatus}]</option>)}
                                     </select>
                                 </div>
-                                <button className="btn btn-primary" onClick={triggerZatcaPortalClearance} disabled={isReportingZatca || !zatcaSelectInvoice} style={{ width: '100%' }}>
-                                    <i className="ri-cloud-upload-line" style={{ marginRight: '8px' }}></i>Submit to ZATCA Sandbox
+                                <button className="btn btn-primary" onClick={triggerZatcaPortalClearance} disabled={!zatcaConnected || isReportingZatca || !zatcaSelectInvoice} style={{ width: '100%' }}>
+                                    <i className="ri-cloud-upload-line" style={{ marginRight: '8px' }}></i>{currentLanguage === 'ar' ? 'إرسال إلى هيئة الزكاة' : `Submit to ZATCA (${zatcaConn.env || 'sandbox'})`}
                                 </button>
                             </div>
 
@@ -3497,6 +3513,7 @@ const handleB2BSubmit = () => {
                         })()}
 
                         {/* Interactive Buttons */}
+                        {zatcaConnected ? (
                         <div style={{ display: 'flex', gap: '8px', marginBottom: '15px' }}>
                             <button className="btn btn-secondary" style={{ flexGrow: 1, background: '#0284c7', color: 'white' }} onClick={() => downloadXml(activeInvoice)}>
                                 <i className="ri-file-code-line"></i> Download ZATCA XML
@@ -3505,6 +3522,11 @@ const handleB2BSubmit = () => {
                                 <i className="ri-cloud-upload-line"></i> Report to ZATCA
                             </button>
                         </div>
+                        ) : (
+                        <div style={{ marginBottom: '15px', padding: '10px', borderRadius: '6px', border: '1px solid var(--glass-border)', color: 'var(--text-secondary)', fontSize: '13px' }}>
+                            <i className="ri-cloud-off-line"></i> {currentLanguage === 'ar' ? 'هيئة الزكاة: غير متصل. هذه الفاتورة لا تُرسل إلى الهيئة.' : 'ZATCA: Not connected. This invoice is not reported to ZATCA.'}
+                        </div>
+                        )}
 
                         <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', borderTop: '1px solid var(--glass-border)', paddingTop: '12px' }}>
                             <button className="btn btn-secondary" onClick={() => setShowInvoiceModal(false)}>{translations[currentLanguage].close}</button>
@@ -4002,9 +4024,8 @@ const handleB2BSubmit = () => {
             setShowInvoiceModal(false);
         })
         .catch(err => {
-            setInvoices(prev => prev.map(i => i.id === invId ? { ...i, zatcaStatus: 'REPORTED' } : i));
-            alert(isAr ? "تم إرسال الفاتورة وتوثيقها لدى الهيئة (وضع المحاكاة المحلي)!" : ("Invoice reported in local simulation mode: " + err.message));
-            setShowInvoiceModal(false);
+            // Not reported: the invoice keeps its status so it can be sent again
+            alert((isAr ? 'لم يتم إرسال الفاتورة إلى هيئة الزكاة: ' : 'The invoice was NOT reported to ZATCA: ') + err.message);
         });
     }
 }

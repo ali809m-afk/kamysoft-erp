@@ -11,7 +11,7 @@ const POS = (props) => {
         paymentMethod, setPaymentMethod, splitCash, setSplitCash, splitCard, setSplitCard,
         tableNum, setTableNum, serviceDuration, setServiceDuration,
         checkout, processCheckout, handleSaveQuotationFromCart,
-        handleHoldTable, handleFireToKitchen
+        handleHoldTable, handleFireToKitchen, hasJuicePrinter
     } = props;
 
     return (
@@ -302,9 +302,16 @@ const POS = (props) => {
                                             <button className="btn btn-secondary" style={{ flexGrow: 1, backgroundColor: 'var(--accent-gold)', color: '#fff', border: 'none' }} onClick={handleHoldTable}>
                                                 <i className="ri-pause-circle-line"></i> {currentLanguage === 'ar' ? 'تعليق / حفظ' : 'Hold Table'}
                                             </button>
-                                            <button className="btn btn-secondary" style={{ flexGrow: 1, backgroundColor: 'var(--accent-cyan)', color: '#fff', border: 'none' }} onClick={handleFireToKitchen}>
-                                                <i className="ri-fire-line"></i> {currentLanguage === 'ar' ? 'إرسال للمطبخ' : 'Fire to KOT'}
+                                            {/* Main + Kitchen printers print together on this button */}
+                                            <button className="btn btn-secondary" style={{ flexGrow: 1, backgroundColor: 'var(--accent-cyan)', color: '#fff', border: 'none' }} onClick={() => handleFireToKitchen('kitchen')}>
+                                                <i className="ri-fire-line"></i> {currentLanguage === 'ar' ? 'إرسال للمطبخ' : 'Fire to Kitchen'}
                                             </button>
+                                            {/* The Juice printer has its own button */}
+                                            {hasJuicePrinter && (
+                                                <button className="btn btn-secondary" style={{ flexGrow: 1, backgroundColor: 'var(--accent-success)', color: '#fff', border: 'none' }} onClick={() => handleFireToKitchen('juice')}>
+                                                    <i className="ri-goblet-line"></i> {currentLanguage === 'ar' ? 'إرسال العصائر' : 'Send Juices'}
+                                                </button>
+                                            )}
                                         </>
                                     )}
                                     <button className="btn btn-primary" style={{ flexGrow: 2 }} onClick={processCheckout}>{translations[currentLanguage].payCheckout}</button>

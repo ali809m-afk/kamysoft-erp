@@ -242,6 +242,9 @@ const settingsSchema = new mongoose.Schema({
         endpoint: { type: String, default: 'http://localhost:5000' }
     },
     zatcaConn: {
+        // 'connected': invoices are signed (Phase 2) and can be reported to ZATCA.
+        // 'not_connected': no signing/reporting; invoices carry the basic simplified-invoice QR.
+        mode: { type: String, enum: ['connected', 'not_connected'], default: 'connected' },
         env: { type: String, default: 'sandbox' },
         endpoint: { type: String, default: 'https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal' },
         clientId: { type: String, default: '' },
@@ -610,6 +613,9 @@ const CustomDomain = mongoose.model('CustomDomain', customDomainSchema);
 const printerConfigSchema = new mongoose.Schema({
     category: { type: String, required: true },
     name: { type: String },          // e.g. "Grill", "Bar", "Kitchen"
+    // Which POS button prints on this printer: 'kitchen' (main "Fire to Kitchen")
+    // or 'juice' (its own "Send to Juice" button)
+    station: { type: String, enum: ['kitchen', 'juice'], default: 'kitchen' },
     ip: { type: String, required: true },
     port: { type: Number, default: 9100 },
     brand: { type: String },

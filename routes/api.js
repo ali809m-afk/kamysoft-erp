@@ -270,22 +270,24 @@ router.post('/api/auth/register-tenant', async (req, res) => {
             return res.status(400).json({ error: 'Invalid subdomain format' });
         }
         
-        // Clean up any orphaned data from a previous failed registration attempt for this tenantId
-        if (global.isMongoConnected) {
-            await Promise.all([
-                User.deleteMany({ tenantId: normalizedTenantId }),
-                Product.deleteMany({ tenantId: normalizedTenantId }),
-                Account.deleteMany({ tenantId: normalizedTenantId }),
-                Settings.deleteOne({ tenantId: normalizedTenantId })
-            ]);
+        // Check uniqueness of tenantId FIRST. The orphan clean-up below used to run before
+        // this check, so signing up with an existing store's subdomain deleted that store's
+        // users, products, accounts and settings.
+        const reservedTenantIds = ['default', 'www', 'demo', 'admin', 'api'];
+        if (reservedTenantIds.includes(normalizedTenantId)) {
+            return res.status(400).json({ error: 'Store subdomain is already registered' });
         }
-        
-        // Check uniqueness of tenantId
         if (global.isMongoConnected) {
             const existingSettings = await Settings.findOne({ tenantId: normalizedTenantId });
             if (existingSettings) {
                 return res.status(400).json({ error: 'Store subdomain is already registered' });
             }
+            // No store owns this subdomain: remove leftovers of an earlier failed sign-up
+            await Promise.all([
+                User.deleteMany({ tenantId: normalizedTenantId }),
+                Product.deleteMany({ tenantId: normalizedTenantId }),
+                Account.deleteMany({ tenantId: normalizedTenantId })
+            ]);
         } else {
             if (mockDb.settingsTenant && mockDb.settingsTenant[normalizedTenantId]) {
                 return res.status(400).json({ error: 'Store subdomain is already registered' });
@@ -1062,6 +1064,40 @@ router.get('/api/invoices', authenticateToken, async (req, res) => {
     }
 });
 
+// --- ZATCA mode -------------------------------------------------------------
+// 'connected'     : invoices are signed (Phase 2 XML, hash chain, full QR) and can be reported.
+// 'not_connected' : no signing or reporting; invoices get the basic simplified-invoice QR
+//                   (seller, VAT number, time, total, VAT) and status NOT_CONNECTED.
+const isZatcaConnected = (settings) => ((settings && settings.zatcaConn && settings.zatcaConn.mode) || 'connected') === 'connected';
+
+// Basic ZATCA QR (TLV tags 1-5), base64
+function buildBasicZatcaQr(settings, invoice) {
+    const tlv = (tag, value) => {
+        const v = Buffer.from(String(value ?? ''), 'utf8');
+        const len = v.length < 128 ? Buffer.from([v.length]) : v.length < 256 ? Buffer.from([0x81, v.length]) : Buffer.from([0x82, (v.length >> 8) & 0xff, v.length & 0xff]);
+        return Buffer.concat([Buffer.from([tag]), len, v]);
+    };
+    const raw = String(invoice.date || '').trim();
+    const m = raw.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2})?)/);
+    const timestamp = m ? `${m[1]}T${m[2].length === 5 ? m[2] + ':00' : m[2]}` : new Date().toISOString().slice(0, 19);
+    return Buffer.concat([
+        tlv(1, settings.businessName || ''),
+        tlv(2, settings.vatNumber || ''),
+        tlv(3, timestamp),
+        tlv(4, Number(invoice.total || 0).toFixed(2)),
+        tlv(5, Number(invoice.vat || 0).toFixed(2))
+    ]).toString('base64');
+}
+
+function applyNotConnectedZatca(invoice, settings) {
+    // Not part of the signed invoice chain (the next signed invoice links to the last signed one)
+    invoice.pih = 'NOT_CONNECTED';
+    invoice.qrCode = buildBasicZatcaQr(settings, invoice);
+    invoice.xml = undefined; invoice.xmlHash = undefined; invoice.xmlHashBase64 = undefined;
+    invoice.signature = undefined; invoice.publicKey = undefined; invoice.certSignature = undefined;
+    if (!invoice.zatcaStatus || invoice.zatcaStatus === 'PENDING') invoice.zatcaStatus = 'NOT_CONNECTED';
+}
+
 router.post('/api/invoices', authenticateToken, async (req, res) => {
     const invoice = req.body;
     if (!invoice.id) {
@@ -1076,8 +1112,9 @@ router.post('/api/invoices', authenticateToken, async (req, res) => {
             const count = await Invoice.countDocuments({ tenantId });
             invoice.csn = count + 1;
 
+            // Previous invoice hash = last *signed* invoice (invoices made in Not connected mode have none)
             let pih = zatcaCrypto.DEFAULT_COMPLIANCE_PREVIOUS_INVOICE_HASH;
-            const lastInvs = await Invoice.find({ tenantId }).sort({ csn: -1 }).limit(1);
+            const lastInvs = await Invoice.find({ tenantId, xmlHashBase64: { $exists: true, $nin: [null, ''] } }).sort({ csn: -1 }).limit(1);
             if (lastInvs.length > 0 && lastInvs[0].xmlHashBase64) {
                 pih = lastInvs[0].xmlHashBase64;
             }
@@ -1086,32 +1123,36 @@ router.post('/api/invoices', authenticateToken, async (req, res) => {
             let settings = await Settings.findOne({ tenantId });
             if (!settings) settings = mockDb.settings;
 
-            const keys = zatcaCrypto.getKeys(tenantId) || zatcaCrypto.onboardDevice(tenantId, {
-                organizationNameAr: settings.businessName,
-                organizationNameEn: settings.businessName,
-                vatNumber: settings.vatNumber,
-                crNumber: settings.crNumber
-            }, settings?.zatcaConn?.env || 'sandbox');
+            if (!isZatcaConnected(settings)) {
+                applyNotConnectedZatca(invoice, settings);
+            } else {
+                const keys = zatcaCrypto.getKeys(tenantId) || zatcaCrypto.onboardDevice(tenantId, {
+                    organizationNameAr: settings.businessName,
+                    organizationNameEn: settings.businessName,
+                    vatNumber: settings.vatNumber,
+                    crNumber: settings.crNumber
+                }, settings?.zatcaConn?.env || 'sandbox');
 
-            const privKey = settings?.zatcaConn?.privateKey || keys.privateKeyPem;
-            const certPem = settings?.zatcaConn?.clientId || keys.certificatePem;
+                const privKey = settings?.zatcaConn?.privateKey || keys.privateKeyPem;
+                const certPem = settings?.zatcaConn?.clientId || keys.certificatePem;
 
-            const unsignedXml = zatcaCrypto.generateZATCAXML(invoice, settings);
-            const signed = zatcaCrypto.signInvoice({
-                xml: unsignedXml,
-                privateKeyPem: privKey,
-                certificatePem: certPem
-            });
+                const unsignedXml = zatcaCrypto.generateZATCAXML(invoice, settings);
+                const signed = zatcaCrypto.signInvoice({
+                    xml: unsignedXml,
+                    privateKeyPem: privKey,
+                    certificatePem: certPem
+                });
 
-            invoice.xml = signed.signedXml;
-            invoice.xmlHash = signed.xmlHashHex;
-            invoice.xmlHashBase64 = signed.xmlHashBase64;
-            invoice.signature = signed.signatureHex;
-            invoice.publicKey = signed.publicKeyBase64;
-            invoice.certSignature = signed.certificateSignature;
-            invoice.qrCode = signed.qrCodeBase64;
-            if (!invoice.zatcaStatus) {
-                invoice.zatcaStatus = 'PENDING';
+                invoice.xml = signed.signedXml;
+                invoice.xmlHash = signed.xmlHashHex;
+                invoice.xmlHashBase64 = signed.xmlHashBase64;
+                invoice.signature = signed.signatureHex;
+                invoice.publicKey = signed.publicKeyBase64;
+                invoice.certSignature = signed.certificateSignature;
+                invoice.qrCode = signed.qrCodeBase64;
+                if (!invoice.zatcaStatus) {
+                    invoice.zatcaStatus = 'PENDING';
+                }
             }
 
             const newInvoice = new Invoice(invoice);
@@ -1131,40 +1172,43 @@ router.post('/api/invoices', authenticateToken, async (req, res) => {
             const tenantInvs = mockDb.invoices.filter(i => i.tenantId === tenantId);
             invoice.csn = tenantInvs.length + 1;
 
+            // Previous invoice hash = last *signed* invoice (invoices made in Not connected mode have none)
             let pih = zatcaCrypto.DEFAULT_COMPLIANCE_PREVIOUS_INVOICE_HASH;
-            if (tenantInvs.length > 0) {
-                const prev = tenantInvs[tenantInvs.length - 1];
-                if (prev.xmlHashBase64) pih = prev.xmlHashBase64;
-            }
+            const signedInvs = tenantInvs.filter(i => i.xmlHashBase64);
+            if (signedInvs.length > 0) pih = signedInvs[signedInvs.length - 1].xmlHashBase64;
             invoice.pih = pih;
 
             const settings = (mockDb.settingsTenant && mockDb.settingsTenant[tenantId]) || mockDb.settings;
-            const keys = zatcaCrypto.getKeys(tenantId) || zatcaCrypto.onboardDevice(tenantId, {
-                organizationNameAr: settings.businessName,
-                organizationNameEn: settings.businessName,
-                vatNumber: settings.vatNumber,
-                crNumber: settings.crNumber
-            }, settings?.zatcaConn?.env || 'sandbox');
+            if (!isZatcaConnected(settings)) {
+                applyNotConnectedZatca(invoice, settings);
+            } else {
+                const keys = zatcaCrypto.getKeys(tenantId) || zatcaCrypto.onboardDevice(tenantId, {
+                    organizationNameAr: settings.businessName,
+                    organizationNameEn: settings.businessName,
+                    vatNumber: settings.vatNumber,
+                    crNumber: settings.crNumber
+                }, settings?.zatcaConn?.env || 'sandbox');
 
-            const privKey = settings?.zatcaConn?.privateKey || keys.privateKeyPem;
-            const certPem = settings?.zatcaConn?.clientId || keys.certificatePem;
+                const privKey = settings?.zatcaConn?.privateKey || keys.privateKeyPem;
+                const certPem = settings?.zatcaConn?.clientId || keys.certificatePem;
 
-            const unsignedXml = zatcaCrypto.generateZATCAXML(invoice, settings);
-            const signed = zatcaCrypto.signInvoice({
-                xml: unsignedXml,
-                privateKeyPem: privKey,
-                certificatePem: certPem
-            });
+                const unsignedXml = zatcaCrypto.generateZATCAXML(invoice, settings);
+                const signed = zatcaCrypto.signInvoice({
+                    xml: unsignedXml,
+                    privateKeyPem: privKey,
+                    certificatePem: certPem
+                });
 
-            invoice.xml = signed.signedXml;
-            invoice.xmlHash = signed.xmlHashHex;
-            invoice.xmlHashBase64 = signed.xmlHashBase64;
-            invoice.signature = signed.signatureHex;
-            invoice.publicKey = signed.publicKeyBase64;
-            invoice.certSignature = signed.certificateSignature;
-            invoice.qrCode = signed.qrCodeBase64;
-            if (!invoice.zatcaStatus) {
-                invoice.zatcaStatus = 'PENDING';
+                invoice.xml = signed.signedXml;
+                invoice.xmlHash = signed.xmlHashHex;
+                invoice.xmlHashBase64 = signed.xmlHashBase64;
+                invoice.signature = signed.signatureHex;
+                invoice.publicKey = signed.publicKeyBase64;
+                invoice.certSignature = signed.certificateSignature;
+                invoice.qrCode = signed.qrCodeBase64;
+                if (!invoice.zatcaStatus) {
+                    invoice.zatcaStatus = 'PENDING';
+                }
             }
 
             mockDb.invoices.push(invoice);
@@ -1300,6 +1344,9 @@ router.post('/api/invoices/:id/zatca-report', authenticateToken, async (req, res
 
         if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
         if (!settings) settings = mockDb.settings;
+        if (!isZatcaConnected(settings)) {
+            return res.status(400).json({ error: 'ZATCA is set to Not connected (Settings > ZATCA). Switch to Connected to report invoices.', zatcaStatus: invoice.zatcaStatus });
+        }
 
         // Load or auto-provision tenant cryptographic keys & CSID
         let localKeys = zatcaCrypto.getKeys(tenantId);
@@ -1408,17 +1455,21 @@ router.post('/api/invoices/:id/refund', authenticateToken, async (req, res) => {
             invoice.invoiceTypeCode = '381'; // ZATCA Credit Note (BR-KSA-17)
             invoice.originalInvoiceId = invoice.id;
 
-            const creditXml = zatcaCrypto.generateZATCAXML(invoice, settings);
-            const signedCredit = zatcaCrypto.signInvoice({
-                xml: creditXml,
-                privateKeyPem: settings?.zatcaConn?.privateKey || localKeys.privateKeyPem,
-                certificatePem: settings?.zatcaConn?.clientId || localKeys.certificatePem
-            });
-            invoice.xml = signedCredit.signedXml;
-            invoice.xmlHash = signedCredit.xmlHashHex;
-            invoice.xmlHashBase64 = signedCredit.xmlHashBase64;
-            invoice.signature = signedCredit.signatureHex;
-            invoice.qrCode = signedCredit.qrCodeBase64;
+            if (!isZatcaConnected(settings)) {
+                invoice.qrCode = buildBasicZatcaQr(settings, invoice);
+            } else {
+                const creditXml = zatcaCrypto.generateZATCAXML(invoice, settings);
+                const signedCredit = zatcaCrypto.signInvoice({
+                    xml: creditXml,
+                    privateKeyPem: settings?.zatcaConn?.privateKey || localKeys.privateKeyPem,
+                    certificatePem: settings?.zatcaConn?.clientId || localKeys.certificatePem
+                });
+                invoice.xml = signedCredit.signedXml;
+                invoice.xmlHash = signedCredit.xmlHashHex;
+                invoice.xmlHashBase64 = signedCredit.xmlHashBase64;
+                invoice.signature = signedCredit.signatureHex;
+                invoice.qrCode = signedCredit.qrCodeBase64;
+            }
 
             await invoice.save();
 
@@ -1443,17 +1494,21 @@ router.post('/api/invoices/:id/refund', authenticateToken, async (req, res) => {
             invoice.invoiceTypeCode = '381'; // ZATCA Credit Note
             invoice.originalInvoiceId = invoice.id;
 
-            const creditXml = zatcaCrypto.generateZATCAXML(invoice, settings);
-            const signedCredit = zatcaCrypto.signInvoice({
-                xml: creditXml,
-                privateKeyPem: settings?.zatcaConn?.privateKey || localKeys.privateKeyPem,
-                certificatePem: settings?.zatcaConn?.clientId || localKeys.certificatePem
-            });
-            invoice.xml = signedCredit.signedXml;
-            invoice.xmlHash = signedCredit.xmlHashHex;
-            invoice.xmlHashBase64 = signedCredit.xmlHashBase64;
-            invoice.signature = signedCredit.signatureHex;
-            invoice.qrCode = signedCredit.qrCodeBase64;
+            if (!isZatcaConnected(settings)) {
+                invoice.qrCode = buildBasicZatcaQr(settings, invoice);
+            } else {
+                const creditXml = zatcaCrypto.generateZATCAXML(invoice, settings);
+                const signedCredit = zatcaCrypto.signInvoice({
+                    xml: creditXml,
+                    privateKeyPem: settings?.zatcaConn?.privateKey || localKeys.privateKeyPem,
+                    certificatePem: settings?.zatcaConn?.clientId || localKeys.certificatePem
+                });
+                invoice.xml = signedCredit.signedXml;
+                invoice.xmlHash = signedCredit.xmlHashHex;
+                invoice.xmlHashBase64 = signedCredit.xmlHashBase64;
+                invoice.signature = signedCredit.signatureHex;
+                invoice.qrCode = signedCredit.qrCodeBase64;
+            }
 
             // Restore stock
             (invoice.items || []).forEach(item => {
@@ -4829,7 +4884,7 @@ router.get('/api/printers', authenticateToken, async (req, res) => {
 // Save Printer Config (one printer per category; '*' = fallback for all other categories)
 router.post('/api/printers', authenticateToken, requirePrinterAdmin, async (req, res) => {
     try {
-        const { category, name, ip, port, brand, model } = req.body || {};
+        const { category, name, ip, port, brand, model, station } = req.body || {};
         if (!category || !String(category).trim()) return res.status(400).json({ error: 'Category is required' });
         if (!isValidPrinterHost(ip)) return res.status(400).json({ error: 'A valid printer IP address or host name is required' });
         const portNum = Number(port) || 9100;
@@ -4837,6 +4892,7 @@ router.post('/api/printers', authenticateToken, requirePrinterAdmin, async (req,
         await restaurantStore.savePrinter(req.tenantId, {
             category: String(category).trim(),
             name: name ? String(name).trim() : '',
+            station: station === 'juice' ? 'juice' : 'kitchen',
             ip: ip.trim(), port: portNum,
             brand: brand || '', model: model || ''
         });
@@ -4965,26 +5021,36 @@ router.delete('/api/restaurant/orders/:id', authenticateToken, async (req, res) 
 // to the printer of its category, or to the fallback printer ('*'). Items that go
 // to the same printer share one ticket. A printer that fails keeps its items
 // unprinted, so firing again retries only those.
+// Body { station: 'kitchen' | 'juice' } picks which POS button is printing: only
+// printers set to that button print; items for the other button stay pending.
 router.post('/api/restaurant/orders/:id/print-kot', authenticateToken, async (req, res) => {
     try {
         const order = await restaurantStore.getOrder(req.tenantId, req.params.id);
         if (!order) return res.status(404).json({ error: 'Order not found' });
 
+        const station = (req.body && req.body.station) === 'juice' ? 'juice' : 'kitchen';
+        const stationOf = (c) => (c && c.station === 'juice' ? 'juice' : 'kitchen');
         const printerConfigs = await restaurantStore.listPrinters(req.tenantId);
         const fallback = printerConfigs.find(c => c.category === FALLBACK_PRINTER_CATEGORY);
         const items = order.items.map(i => ({ ...i, printedQty: printedQtyOf(i) }));
 
         const pending = items.filter(i => i.qty !== i.printedQty);
         if (pending.length === 0) {
-            return res.json({ success: true, message: 'No new items to print', results: [], unrouted: [] });
+            return res.json({ success: true, station, message: 'No new items to print', results: [], unrouted: [], waitingForOtherButton: [] });
         }
 
         // Group pending items by destination printer (ip:port)
         const groups = new Map();
         const unrouted = [];
+        const waitingForOtherButton = [];
         pending.forEach(item => {
             const config = printerConfigs.find(c => c.category !== FALLBACK_PRINTER_CATEGORY && normCategory(c.category) === normCategory(item.category)) || fallback;
-            if (!config || !config.ip) { unrouted.push({ name: item.nameEN || item.name, category: item.category || '' }); return; }
+            if (!config || !config.ip) {
+                // Items without any printer are reported on the main (kitchen) button only
+                if (station === 'kitchen') unrouted.push({ name: item.nameEN || item.name, category: item.category || '' });
+                return;
+            }
+            if (stationOf(config) !== station) { waitingForOtherButton.push({ name: item.nameEN || item.name, printer: config.name || config.category }); return; }
             const key = `${config.ip.trim()}:${Number(config.port) || 9100}`;
             if (!groups.has(key)) groups.set(key, { config, items: [] });
             groups.get(key).items.push(item);
@@ -5030,7 +5096,8 @@ router.post('/api/restaurant/orders/:id/print-kot', authenticateToken, async (re
         await restaurantStore.saveOrder(req.tenantId, { ...order, items: remaining });
 
         const allPrinted = results.every(r => r.success) && unrouted.length === 0;
-        res.json({ success: allPrinted, results, unrouted });
+        const message = results.length === 0 && unrouted.length === 0 ? 'No new items for this button' : undefined;
+        res.json({ success: allPrinted, station, message, results, unrouted, waitingForOtherButton });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
