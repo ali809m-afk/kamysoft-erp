@@ -69,6 +69,9 @@ const Reports = (props) => {
         const totalDailySales = activeDayInvoices.reduce((sum, inv) => sum + (Number(inv.total) || 0), 0);
         const totalDailyVat = activeDayInvoices.reduce((sum, inv) => sum + (Number(inv.vat) || 0), 0);
         const netDailySales = totalDailySales - totalDailyVat;
+        // Coupon discounts given on the day's (non-refunded) sales, before VAT
+        const totalDailyDiscount = activeDayInvoices.reduce((sum, inv) => sum + (Number(inv.discount) || 0), 0);
+        const discountedCount = activeDayInvoices.filter(inv => Number(inv.discount) > 0).length;
 
         // Breakdown by payment modes
         const paymentBreakdown = {
@@ -160,6 +163,11 @@ const Reports = (props) => {
                             <div className="stat-info">
                                 <h3>{translations[currentLanguage]?.totalSalesTax || (currentLanguage === 'ar' ? 'إجمالي مبيعات اليوم' : 'Total Daily Sales')}</h3>
                                 <div className="stat-value">{formatCurrency(totalDailySales)}</div>
+                                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                                    {currentLanguage === 'ar'
+                                        ? `الخصومات: ${formatCurrency(totalDailyDiscount)} (${discountedCount} فاتورة)`
+                                        : `Discounts: ${formatCurrency(totalDailyDiscount)} (${discountedCount} invoice${discountedCount === 1 ? '' : 's'})`}
+                                </div>
                             </div>
                             <div className="stat-icon"><i className="ri-money-dollar-circle-line"></i></div>
                         </div>

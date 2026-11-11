@@ -166,7 +166,7 @@ const POS = (props) => {
                                 </div>
                                 <div className="total-row">
                                     <span>{translations[currentLanguage].vat}</span>
-                                    <span>{formatCurrency(cart.reduce((a, b) => a + (b.product.price * b.qty), 0) * (settings.taxRate / 100))}</span>
+                                    <span>{formatCurrency((cart.reduce((a, b) => a + (b.product.price * b.qty), 0) - (activeCoupon ? cart.reduce((a, b) => a + (b.product.price * b.qty), 0) * activeCoupon.rate : 0)) * (settings.taxRate / 100))}</span>
                                 </div>
                                 <div className="total-row grand-total">
                                     <span>{translations[currentLanguage].grandTotal}</span>

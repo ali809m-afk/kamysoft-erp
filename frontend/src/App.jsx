@@ -364,7 +364,7 @@ const translations = {
         signature: "Cryptographic Signature",
         xmlValidationOk: "UBL 2.1 Schema Compliance: Valid",
         
-        currencySymbol: "SAR",
+        currencySymbol: "\u20C1",
         tailoring_dashboard: "Bespoke Tailoring Dashboard",
         tailoring_measurements: "Customer Measurement Profiles",
         tailoring_orders: "Tailoring Orders & Advance Deposits",
@@ -593,7 +593,7 @@ const translations = {
         signature: "التوقيع التشفيري الرقمي",
         xmlValidationOk: "مطابقة هيكلية UBL 2.1: سليم وصالح",
         
-        currencySymbol: "ر.س",
+        currencySymbol: "\u20C1",
         tailoring_dashboard: "لوحة القيادة للخياطة والتفصيل",
         tailoring_measurements: "سجل مقاسات العملاء وتفضيلات الموديل",
         tailoring_orders: "أوامر التفصيل والعربون والتسليم",
@@ -1039,8 +1039,10 @@ export default function App() {
         const baseCurr = (settings && settings.baseCurrency) || 'SAR';
         const rate = rates[baseCurr] || 1;
         const converted = amountSAR * rate;
-        const symbol = translations[currentLanguage].currencySymbol === 'ر.س' && baseCurr !== 'SAR' ? 
-            baseCurr : translations[currentLanguage].currencySymbol;
+        // Saudi Riyal uses the official SAMA symbol (U+20C1, drawn by the bundled
+        // SaudiRiyal font). Other base currencies show their ISO code; before, the
+        // English UI showed "SAR" even after converting the amount to USD/EUR.
+        const symbol = baseCurr === 'SAR' ? translations[currentLanguage].currencySymbol : baseCurr;
         return `${converted.toFixed(2)} ${symbol}`;
     };
     const handleLogin = (e) => {
@@ -1298,6 +1300,7 @@ export default function App() {
             customer: activeCustomer !== 'walk-in' ? customers.find(c => c.id === activeCustomer)?.name : '',
             items,
             subtotal,
+            discount,
             vat,
             total: grandTotal
         };
@@ -3190,6 +3193,10 @@ const handleB2BSubmit = () => {
                         {(() => {
                             const activeVat = activeInvoice.vat !== undefined && activeInvoice.vat !== null ? activeInvoice.vat : (activeInvoice.total - (activeInvoice.total / 1.15));
                             const activeSubtotal = activeInvoice.total - activeVat;
+                            // Invoice-level discount (coupon): shown before VAT and spread over the lines
+                            const docDiscount = Number(activeInvoice.discount) || 0;
+                            const docGross = (activeInvoice.items || []).reduce((s, it) => s + (it.price || 0) * (it.qty || 1), 0);
+                            const activeGross = activeSubtotal + docDiscount;
                             return (
                                 <div style={{ display: 'flex', justifyContent: 'center', width: '100%', marginBottom: '20px' }}>
                                 <div id="invoicePrintArea" className={invoiceFormat === 'a4' ? 'invoice-a4-layout' : 'invoice-thermal-layout'} style={{ direction: 'ltr', background: 'white', color: 'black' }}>
@@ -3255,8 +3262,8 @@ const handleB2BSubmit = () => {
                                                     {(activeInvoice.items || []).map((item, idx) => {
                                                         const itemQty = item.qty || 1;
                                                         const itemPrice = item.price || 0;
-                                                        const itemDiscount = 0; 
                                                         const rawSubtotal = itemPrice * itemQty;
+                                                        const itemDiscount = docGross > 0 ? (docDiscount * rawSubtotal / docGross) : 0;
                                                         const itemTaxableAmount = rawSubtotal - itemDiscount;
                                                         const itemTaxRate = settings.taxRate || 15;
                                                         const itemTaxAmount = itemTaxableAmount * (itemTaxRate / 100);
@@ -3361,7 +3368,7 @@ const handleB2BSubmit = () => {
                                                         <tbody>
                                                             <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
                                                                 <td style={{ padding: '4px 6px', fontWeight: 'bold' }}>{currentLanguage === 'ar' ? 'الإجمالي (غير شامل ضريبة القيمة المضافة)' : 'Total (Excluding VAT)'}</td>
-                                                                <td style={{ padding: '4px 6px', textAlign: 'right', fontWeight: 'bold' }}>{formatCurrency(activeSubtotal)}</td>
+                                                                <td style={{ padding: '4px 6px', textAlign: 'right', fontWeight: 'bold' }}>{formatCurrency(activeGross)}</td>
                                                             </tr>
                                                             <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
                                                                 <td style={{ padding: '4px 6px', fontWeight: 'bold' }}>{currentLanguage === 'ar' ? 'مجموع الخصومات' : 'Discount'}</td>
@@ -3436,11 +3443,7 @@ const handleB2BSubmit = () => {
                                             <div style={{ fontSize: '13px', fontWeight: 'bold', lineHeight: '1.6', margin: '10px 0' }}>
                                                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                                                     <span>{currentLanguage === 'ar' ? 'المجموع (غير شامل الضريبة):' : 'Subtotal (Excl. VAT):'}</span>
-                                                    <span>{formatCurrency(activeSubtotal)}</span>
-                                                </div>
-                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                                    <span>{currentLanguage === 'ar' ? 'ضريبة القيمة المضافة (15%):' : 'VAT (15%):'}</span>
-                                                    <span>{formatCurrency(activeVat)}</span>
+                                                    <span>{formatCurrency(activeGross)}</span>
                                                 </div>
                                                 {activeInvoice.discount > 0 && (
                                                     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -3448,6 +3451,10 @@ const handleB2BSubmit = () => {
                                                         <span>-{formatCurrency(activeInvoice.discount)}</span>
                                                     </div>
                                                 )}
+                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                    <span>{currentLanguage === 'ar' ? 'ضريبة القيمة المضافة (15%):' : 'VAT (15%):'}</span>
+                                                    <span>{formatCurrency(activeVat)}</span>
+                                                </div>
                                                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '15px', fontWeight: '900', borderTop: '2px solid #000', paddingTop: '4px', marginTop: '4px' }}>
                                                     <span>{currentLanguage === 'ar' ? 'المجموع (شامل الضريبة):' : 'Total (Incl. VAT):'}</span>
                                                     <span>{formatCurrency(activeInvoice.total)}</span>
@@ -3664,6 +3671,9 @@ const handleB2BSubmit = () => {
             {showQuotationModal && activeQuotation && (() => {
                 const activeVat = activeQuotation.vat !== undefined && activeQuotation.vat !== null ? activeQuotation.vat : (activeQuotation.total - (activeQuotation.total / 1.15));
                 const activeSubtotal = activeQuotation.total - activeVat;
+                const docDiscount = Number(activeQuotation.discount) || 0;
+                const docGross = (activeQuotation.items || []).reduce((s, it) => s + (it.price || 0) * (it.qty || 1), 0);
+                const activeGross = activeSubtotal + docDiscount;
                 return (
                     <div className="modal-overlay">
                         <div className="modal">
@@ -3818,7 +3828,11 @@ const handleB2BSubmit = () => {
                                                     <tbody>
                                                         <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
                                                             <td style={{ padding: '4px 6px', fontWeight: 'bold' }}>Total (Excluding VAT) / الاجمالي (غير شامل ضريبة القيمة المضافة)</td>
-                                                            <td style={{ padding: '4px 6px', textAlign: 'right', fontWeight: 'bold' }}>{formatCurrency(activeSubtotal)}</td>
+                                                            <td style={{ padding: '4px 6px', textAlign: 'right', fontWeight: 'bold' }}>{formatCurrency(activeGross)}</td>
+                                                        </tr>
+                                                        <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
+                                                            <td style={{ padding: '4px 6px', fontWeight: 'bold' }}>Discount / مجموع الخصومات</td>
+                                                            <td style={{ padding: '4px 6px', textAlign: 'right', fontWeight: 'bold' }}>{formatCurrency(docDiscount)}</td>
                                                         </tr>
                                                         <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
                                                             <td style={{ padding: '4px 6px', fontWeight: 'bold' }}>Total Taxable Amount / الاجمالي الخاضع للضريبة</td>
@@ -3886,8 +3900,14 @@ const handleB2BSubmit = () => {
                                         <div style={{ fontSize: '11px', lineHeight: '1.6', margin: '10px 0' }}>
                                             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                                                 <span>Subtotal / المجموع غير شامل الضريبة:</span>
-                                                <span>{formatCurrency(activeSubtotal)}</span>
+                                                <span>{formatCurrency(activeGross)}</span>
                                             </div>
+                                            {docDiscount > 0 && (
+                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                    <span>Discount / الخصم:</span>
+                                                    <span>-{formatCurrency(docDiscount)}</span>
+                                                </div>
+                                            )}
                                             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                                                 <span>VAT (15%) / ضريبة القيمة المضافة:</span>
                                                 <span>{formatCurrency(activeVat)}</span>
