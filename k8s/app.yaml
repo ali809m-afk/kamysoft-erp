@@ -7,6 +7,10 @@ metadata:
 data:
   PORT: "8089"
   MONGO_URI: "mongodb://mongodb:27017/kamysoft-erp"
+  # demo.26i.uk / 26i.uk serve the public demo store (the "default" store), whose login
+  # page offers demo / demo123. This creates the demo logins for that store only;
+  # logins are bound to their store, so they cannot open any customer's store.
+  SEED_DEMO_USERS: "true"
 ---
 # The "kamysoft-erp-secrets" Secret (JWT_SECRET, SAAS_ADMIN_KEY) is NOT stored in
 # this repository. The deploy workflow creates it from the GitHub Actions secrets
@@ -51,6 +55,12 @@ spec:
                 configMapKeyRef:
                   name: kamysoft-erp-config
                   key: MONGO_URI
+            - name: SEED_DEMO_USERS
+              valueFrom:
+                configMapKeyRef:
+                  name: kamysoft-erp-config
+                  key: SEED_DEMO_USERS
+                  optional: true
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:

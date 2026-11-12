@@ -37,6 +37,36 @@ import Sidebar from './components/Sidebar';
 import TableManagement from './views/restaurant/TableManagement';
 import PrinterSetup from './views/restaurant/PrinterSetup';
 import BusinessLandingPage from './views/storefront/BusinessLandingPage';
+
+// When the server rejects the saved login (expired, the server's login secret changed, the
+// user was removed, or it belongs to another store), sign out and show the login page.
+// Before, the app stayed on the dashboard and every screen silently came back empty.
+// Installed once at load, before any screen starts its requests.
+let onLoginRejected = null;
+if (typeof window !== 'undefined' && !window.__kamyFetchWatcher) {
+    window.__kamyFetchWatcher = true;
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (input, init = {}) => {
+        const response = await originalFetch(input, init);
+        try {
+            const url = typeof input === 'string' ? input : (input && input.url) || '';
+            const h = init && init.headers;
+            const auth = h && (typeof h.get === 'function' ? h.get('Authorization') : (h.Authorization || h.authorization));
+            const isApi = url.startsWith('/api/') || url.startsWith(window.location.origin + '/api/');
+            const isLogin = url.includes('/api/auth/') || url.includes('/api/tenant-portal/');
+            if (auth && isApi && !isLogin && localStorage.getItem('token') && onLoginRejected) {
+                if (response.status === 401) {
+                    onLoginRejected();
+                } else if (response.status === 403) {
+                    // Only a store mismatch means the login itself is wrong; other 403s are permissions
+                    const body = await response.clone().json().catch(() => ({}));
+                    if (body && body.error === 'Tenant access mismatch') onLoginRejected();
+                }
+            }
+        } catch (e) { /* never break the request */ }
+        return response;
+    };
+}
 import SaasAdmin from './SaasAdmin';
 import Maintenance from './views/services/Maintenance';
 import Properties from './views/realestate/Properties';
@@ -1115,6 +1145,9 @@ export default function App() {
         setToken('');
         setUser(null);
     };
+
+    // Called by the fetch watcher at the top of this file when the saved login is rejected
+    onLoginRejected = handleLogout;
 
     // Check Role Restrictions
     const isAllowedTab = (tabName) => {

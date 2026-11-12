@@ -142,15 +142,25 @@ global.isMongoConnected = false;
 const MONGO_URI = process.env.MONGO_URI;
 
 if (MONGO_URI) {
-    mongoose.connect(MONGO_URI)
-        .then(() => {
-            console.log('Successfully connected to MongoDB.');
-            global.isMongoConnected = true;
-            seedDatabase();
-        })
-        .catch(err => {
-            console.warn('MongoDB connection failed. Starting in PORTABLE in-memory mode.', err.message);
-        });
+    // Keep retrying: a single attempt at start-up left the server in in-memory mode for
+    // good whenever MongoDB was not ready yet (e.g. right after a deploy), so stores,
+    // users and sales created afterwards were lost on the next restart.
+    const retryMs = Number(process.env.MONGO_RETRY_MS) || 10000;
+    let attempt = 0;
+    const connectMongo = () => {
+        attempt++;
+        mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 8000 })
+            .then(() => {
+                console.log(`Successfully connected to MongoDB${attempt > 1 ? ` (attempt ${attempt})` : ''}.`);
+                global.isMongoConnected = true;
+                seedDatabase();
+            })
+            .catch(err => {
+                console.warn(`MongoDB connection failed (attempt ${attempt}): ${err.message}. Using in-memory mode until it connects; retrying in ${Math.round(retryMs / 1000)}s.`);
+                setTimeout(connectMongo, retryMs);
+            });
+    };
+    connectMongo();
 } else {
     console.log('No MONGO_URI provided. Running in PORTABLE in-memory mode.');
 }
