@@ -608,21 +608,27 @@ const customDomainSchema = new mongoose.Schema({
 const CustomDomain = mongoose.model('CustomDomain', customDomainSchema);
 
 // Restaurant Module Schemas
-// One row per product category -> network printer. Category '*' is the fallback
-// printer for items whose category has no printer of its own.
+// One row per physical printer (stable id). A printer takes one or more product
+// categories; a category may go to several printers. Special categories:
+// '*' = fallback for categories without a printer, '__receipt__' = cashier receipts.
 const printerConfigSchema = new mongoose.Schema({
-    category: { type: String, required: true },
-    name: { type: String },          // e.g. "Grill", "Bar", "Kitchen"
+    id: { type: String },            // stable printer id (older rows get one on first save)
+    category: { type: String },      // first category, kept for older code/rows
+    categories: [{ type: String }],
+    name: { type: String },          // e.g. "Shawarma", "Drinks", "Cashier"
     // Which POS button prints on this printer: 'kitchen' (main "Fire to Kitchen")
-    // or 'juice' (its own "Send to Juice" button)
+    // or 'juice' (its own "Send Juices" button)
     station: { type: String, enum: ['kitchen', 'juice'], default: 'kitchen' },
-    ip: { type: String, required: true },
+    // 'network': raw TCP to ip:port. 'windows': a printer installed in Windows (e.g. USB)
+    connection: { type: String, enum: ['network', 'windows'], default: 'network' },
+    windowsName: { type: String },
+    ip: { type: String },
     port: { type: Number, default: 9100 },
     brand: { type: String },
     model: { type: String },
     tenantId: { type: String, default: 'default', index: true }
 });
-printerConfigSchema.index({ category: 1, tenantId: 1 }, { unique: true });
+// (The old unique index on category+tenantId is dropped at start-up: see restaurantStore.)
 const PrinterConfig = mongoose.model('PrinterConfig', printerConfigSchema);
 
 const restaurantOrderSchema = new mongoose.Schema({
@@ -638,7 +644,8 @@ const restaurantOrderSchema = new mongoose.Schema({
             price: { type: Number, required: true },
             qty: { type: Number, required: true },   // 0 = removed after it was sent to the kitchen (cancel pending)
             category: { type: String },
-            printedQty: { type: Number, default: 0 }, // how many have been sent to the kitchen
+            printedQty: { type: Number, default: 0 }, // sent to ALL of the item's printers
+            printedBy: { type: mongoose.Schema.Types.Mixed, default: {} }, // per printer id: qty printed there
             isPrinted: { type: Boolean, default: false }
         }
     ],
@@ -674,7 +681,7 @@ const printJobSchema = new mongoose.Schema({
     kind: { type: String, default: 'kot' },   // 'kot' | 'receipt' | 'test'
     orderId: { type: String },
     tableNumber: { type: String },
-    printer: { name: String, ip: String, port: Number },
+    printer: { name: String, connection: String, ip: String, port: Number, windowsName: String },
     lines: [{ text: String, bold: Boolean, align: String, qr: String }],
     status: { type: String, enum: ['pending', 'printing', 'done', 'failed'], default: 'pending' },
     error: { type: String },

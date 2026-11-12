@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 const FALLBACK = '*';
 // Category '__receipt__' = the cashier's printer for customer invoices / receipts
 const RECEIPT = '__receipt__';
-const emptyForm = { category: '', name: '', station: 'kitchen', ip: '', port: 9100, brand: 'Epson', model: 'epson-generic' };
+const emptyForm = { id: '', categories: [], name: '', station: 'kitchen', connection: 'network', windowsName: '', ip: '', port: 9100, brand: 'Epson', model: 'epson-generic' };
 
 const PrinterSetup = ({ currentLanguage, translations, headers, products = [], setHasJuicePrinter }) => {
     const ar = currentLanguage === 'ar';
@@ -12,6 +12,7 @@ const PrinterSetup = ({ currentLanguage, translations, headers, products = [], s
     const [form, setForm] = useState(emptyForm);
     const [status, setStatus] = useState(null); // { ok: boolean, text: string }
     const [testing, setTesting] = useState('');
+    const [customCategory, setCustomCategory] = useState('');
     const productCategories = [...new Set((products || []).map(p => p.category).filter(Boolean))];
     const categoryLabel = (c) => (c === FALLBACK ? (ar ? 'كل الأصناف الأخرى (افتراضي)' : 'All other items (default)')
         : c === RECEIPT ? (ar ? 'الفواتير / الإيصالات (الكاشير)' : 'Receipts / invoices (cashier)') : c);
@@ -148,9 +149,19 @@ const PrinterSetup = ({ currentLanguage, translations, headers, products = [], s
         fetchConfigs();
     }, []);
 
+    const toggleCategory = (cat) => {
+        const has = form.categories.includes(cat);
+        setForm({ ...form, categories: has ? form.categories.filter(c => c !== cat) : [...form.categories, cat] });
+    };
+    const addCustomCategory = () => {
+        const cat = customCategory.trim();
+        if (cat && !form.categories.includes(cat)) setForm({ ...form, categories: [...form.categories, cat] });
+        setCustomCategory('');
+    };
+
     const handleSave = () => {
-        if (!form.category || !form.ip) {
-            setStatus({ ok: false, text: ar ? 'اختر الفئة وأدخل عنوان IP' : 'Choose a category and enter the IP address' });
+        if (form.categories.length === 0) {
+            setStatus({ ok: false, text: ar ? 'اختر فئة واحدة على الأقل' : 'Choose at least one category' });
             return;
         }
         fetch('/api/printers', {
@@ -168,26 +179,37 @@ const PrinterSetup = ({ currentLanguage, translations, headers, products = [], s
         .catch(err => setStatus({ ok: false, text: err.message }));
     };
 
-    // Prints a short test ticket so staff can confirm the IP/port and which printer is which
+    // Prints a short test ticket so staff can confirm the connection and which printer is which
     const handleTest = (printer) => {
-        if (!printer.ip) { setStatus({ ok: false, text: ar ? 'أدخل عنوان IP أولاً' : 'Enter the IP address first' }); return; }
-        setTesting(printer.category || printer.ip);
+        setTesting(printer.id || 'form');
         fetch('/api/printers/test', { method: 'POST', headers, body: JSON.stringify(printer) })
             .then(res => res.json())
             .then(data => setStatus(data.success
                 ? (data.queued
                     ? { ok: data.agentOnline !== false, text: (ar ? 'أُرسلت صفحة الاختبار لوكيل الطباعة' : 'Test ticket sent to the print agent') + (data.agentOnline === false ? (ar ? ' (الوكيل غير متصل الآن)' : ' (the agent is offline right now)') : '') }
-                    : { ok: true, text: (ar ? 'تمت طباعة صفحة اختبار على ' : 'Test ticket printed on ') + (printer.name || printer.ip) })
+                    : { ok: true, text: (ar ? 'تمت طباعة صفحة اختبار على ' : 'Test ticket printed on ') + (printer.name || printer.ip || printer.windowsName) })
                 : { ok: false, text: (ar ? 'فشل الاختبار: ' : 'Test failed: ') + (data.error || '') }))
             .catch(err => setStatus({ ok: false, text: err.message }))
             .finally(() => setTesting(''));
     };
 
-    const handleDelete = (category) => {
-        fetch(`/api/printers/${encodeURIComponent(category)}`, { method: 'DELETE', headers })
+    const handleDelete = (id) => {
+        fetch(`/api/printers/${encodeURIComponent(id)}`, { method: 'DELETE', headers })
             .then(() => fetchConfigs())
             .catch(err => console.error(err));
     };
+
+    const editPrinter = (config) => setForm({
+        ...emptyForm, ...config,
+        categories: config.categories && config.categories.length ? config.categories : (config.category ? [config.category] : []),
+        name: config.name || '', station: config.station || 'kitchen',
+        connection: config.connection || 'network', windowsName: config.windowsName || '',
+        ip: config.ip || '', port: config.port || 9100,
+        brand: config.brand || 'Epson', model: config.model || 'epson-generic'
+    });
+    // Categories on any saved printer that are not among the current products (kept selectable)
+    const extraCategories = [...new Set(configs.flatMap(c => c.categories || []).concat(form.categories))]
+        .filter(c => c !== FALLBACK && c !== RECEIPT && !productCategories.includes(c));
 
     return (
         <div className="view-content active">
@@ -277,37 +299,18 @@ const PrinterSetup = ({ currentLanguage, translations, headers, products = [], s
             </div>
 
             <div className="glass-card" style={{ marginBottom: '20px' }}>
-                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                    <select
-                        className="form-control"
-                        aria-label={ar ? 'الفئة' : 'Category'}
-                        value={productCategories.includes(form.category) || form.category === FALLBACK || form.category === RECEIPT || form.category === '' ? form.category : '__custom'}
-                        onChange={e => setForm({ ...form, category: e.target.value === '__custom' ? ' ' : e.target.value })}
-                        style={{ minWidth: '180px', flex: 1 }}
-                    >
-                        <option value="">{ar ? '— اختر الفئة —' : '— Choose category —'}</option>
-                        {productCategories.map(c => <option key={c} value={c}>{c}</option>)}
-                        <option value={FALLBACK}>{categoryLabel(FALLBACK)}</option>
-                        <option value={RECEIPT}>{categoryLabel(RECEIPT)}</option>
-                        <option value="__custom">{ar ? 'فئة أخرى…' : 'Other category…'}</option>
-                    </select>
-                    {form.category !== '' && form.category !== FALLBACK && form.category !== RECEIPT && !productCategories.includes(form.category) && (
-                        <input
-                            type="text"
-                            placeholder={ar ? 'اسم الفئة كما في المنتجات' : 'Category name as on the products'}
-                            className="form-control"
-                            value={form.category.trim() === '' ? '' : form.category}
-                            onChange={e => setForm({ ...form, category: e.target.value || ' ' })}
-                            style={{ flex: 1, minWidth: '160px' }}
-                        />
-                    )}
+                <h3 style={{ margin: '0 0 10px', fontSize: '16px' }}>
+                    {form.id ? (ar ? 'تعديل الطابعة' : 'Edit printer') : (ar ? 'إضافة طابعة' : 'Add a printer')}
+                </h3>
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '10px' }}>
                     <input
                         type="text"
-                        placeholder={ar ? 'اسم الطابعة (مثل: البار)' : 'Printer name (e.g., Bar)'}
+                        placeholder={ar ? 'اسم الطابعة (مثل: الشاورما، المشروبات)' : 'Printer name (e.g., Shawarma, Drinks)'}
+                        aria-label={ar ? 'اسم الطابعة' : 'Printer name'}
                         className="form-control"
                         value={form.name}
                         onChange={e => setForm({ ...form, name: e.target.value })}
-                        style={{ flex: 1, minWidth: '140px' }}
+                        style={{ flex: 1, minWidth: '180px' }}
                     />
                     <select
                         className="form-control"
@@ -319,52 +322,116 @@ const PrinterSetup = ({ currentLanguage, translations, headers, products = [], s
                         <option value="kitchen">{stationLabel('kitchen')}</option>
                         <option value="juice">{stationLabel('juice')}</option>
                     </select>
-                    <input 
-                        type="text" 
-                        placeholder="IP Address (e.g., 192.168.1.100)" 
-                        className="form-control" 
-                        value={form.ip} 
-                        onChange={e => setForm({...form, ip: e.target.value})} 
-                    />
-                    <input 
-                        type="number" 
-                        placeholder="Port (9100)" 
-                        className="form-control" 
-                        value={form.port} 
-                        onChange={e => setForm({...form, port: parseInt(e.target.value) || ''})}
-                        style={{ width: '100px' }}
-                    />
-                    <select 
-                        className="form-control" 
-                        value={form.brand} 
+                </div>
+
+                {/* Categories: several per printer; a category may also go to several printers */}
+                <div style={{ marginBottom: '10px' }}>
+                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                        {ar ? 'الفئات التي تُطبع على هذه الطابعة (يمكن اختيار أكثر من فئة، ويمكن أن تُطبع الفئة على أكثر من طابعة):' : 'Categories that print here (pick several; a category can also print on several printers):'}
+                    </div>
+                    <div role="group" aria-label={ar ? 'الفئات' : 'Categories'} style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                        {[...productCategories, ...extraCategories, FALLBACK, RECEIPT].map(cat => {
+                            const on = form.categories.includes(cat);
+                            return (
+                                <label key={cat} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '6px 10px', borderRadius: '999px', cursor: 'pointer', fontSize: '13px',
+                                    border: `1px solid ${on ? 'var(--accent-cyan)' : 'var(--glass-border)'}`, background: on ? 'rgba(6, 182, 212, 0.12)' : 'transparent' }}>
+                                    <input type="checkbox" checked={on} onChange={() => toggleCategory(cat)} style={{ margin: 0 }} />
+                                    {categoryLabel(cat)}
+                                </label>
+                            );
+                        })}
+                        <span style={{ display: 'inline-flex', gap: '6px' }}>
+                            <input type="text" className="form-control" value={customCategory} onChange={e => setCustomCategory(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addCustomCategory(); } }}
+                                placeholder={ar ? 'فئة أخرى…' : 'Other category…'} aria-label={ar ? 'فئة أخرى' : 'Other category'} style={{ width: '150px', padding: '4px 8px' }} />
+                            <button type="button" className="btn btn-secondary" onClick={addCustomCategory} style={{ padding: '4px 10px' }}>+</button>
+                        </span>
+                    </div>
+                </div>
+
+                {/* Connection: network printer (IP) or a printer installed in Windows (e.g. USB) */}
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <select
+                        className="form-control"
+                        aria-label={ar ? 'نوع الاتصال' : 'Connection'}
+                        value={form.connection}
+                        onChange={e => setForm({ ...form, connection: e.target.value })}
+                        style={{ minWidth: '210px' }}
+                    >
+                        <option value="network">{ar ? 'طابعة شبكة (عنوان IP)' : 'Network printer (IP address)'}</option>
+                        <option value="windows">{ar ? 'طابعة مثبتة في ويندوز (USB)' : 'Printer installed in Windows (USB)'}</option>
+                    </select>
+                    {form.connection === 'windows' ? (
+                        <input
+                            type="text"
+                            placeholder={ar ? 'اسم الطابعة كما يظهر في ويندوز (مثل: XP-80C)' : 'Printer name exactly as in Windows (e.g., XP-80C)'}
+                            aria-label={ar ? 'اسم طابعة ويندوز' : 'Windows printer name'}
+                            className="form-control"
+                            value={form.windowsName}
+                            onChange={e => setForm({ ...form, windowsName: e.target.value })}
+                            style={{ flex: 1, minWidth: '220px' }}
+                        />
+                    ) : (
+                        <>
+                            <input
+                                type="text"
+                                placeholder="IP Address (e.g., 192.168.1.100)"
+                                aria-label={ar ? 'عنوان IP' : 'IP address'}
+                                className="form-control"
+                                value={form.ip}
+                                onChange={e => setForm({ ...form, ip: e.target.value })}
+                                style={{ flex: 1, minWidth: '180px' }}
+                            />
+                            <input
+                                type="number"
+                                placeholder="Port (9100)"
+                                aria-label={ar ? 'المنفذ' : 'Port'}
+                                className="form-control"
+                                value={form.port}
+                                onChange={e => setForm({ ...form, port: parseInt(e.target.value) || '' })}
+                                style={{ width: '100px' }}
+                            />
+                        </>
+                    )}
+                    <select
+                        className="form-control"
+                        aria-label={ar ? 'العلامة التجارية' : 'Brand'}
+                        value={form.brand}
                         onChange={e => {
                             const newBrand = e.target.value;
                             const brandGroup = printerBrands.find(b => b.brand === newBrand);
-                            setForm({...form, brand: newBrand, model: brandGroup ? brandGroup.models[0].id : ''});
+                            setForm({ ...form, brand: newBrand, model: brandGroup ? brandGroup.models[0].id : '' });
                         }}
                     >
                         {printerBrands.map(brandGroup => (
-                            <option key={brandGroup.brand} value={brandGroup.brand}>
-                                {brandGroup.brand}
-                            </option>
+                            <option key={brandGroup.brand} value={brandGroup.brand}>{brandGroup.brand}</option>
                         ))}
                     </select>
-                    <select 
-                        className="form-control" 
-                        value={form.model} 
-                        onChange={e => setForm({...form, model: e.target.value})}
+                    <select
+                        className="form-control"
+                        aria-label={ar ? 'الطراز' : 'Model'}
+                        value={form.model}
+                        onChange={e => setForm({ ...form, model: e.target.value })}
                     >
                         {printerBrands.find(b => b.brand === form.brand)?.models.map(p => (
                             <option key={p.id} value={p.id}>{p.name}</option>
                         ))}
                     </select>
-                    <button className="btn btn-secondary" onClick={() => handleTest({ ...form, category: form.category.trim() })} disabled={!!testing}>
+                    <button className="btn btn-secondary" onClick={() => handleTest(form)} disabled={!!testing}>
                         <i className="ri-printer-line"></i> {ar ? 'طباعة تجريبية' : 'Test print'}
                     </button>
                     <button className="btn btn-primary" onClick={handleSave}>
                         <i className="ri-save-line"></i> {translations[currentLanguage]?.saveBtn || (ar ? 'حفظ' : 'Save')}
                     </button>
+                    {form.id && (
+                        <button className="btn btn-secondary" onClick={() => setForm(emptyForm)}>{ar ? 'إلغاء' : 'Cancel'}</button>
+                    )}
                 </div>
+                {form.connection === 'windows' && (
+                    <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                        {ar ? 'طابعات ويندوز تُطبع من التطبيق المكتبي أو من وكيل الطباعة على جهاز ويندوز الموصولة به الطابعة.' : 'Windows printers print from the desktop app, or from the print agent on the Windows PC the printer is connected to.'}
+                    </div>
+                )}
                 {status && (
                     <div role="status" style={{ marginTop: '10px', fontSize: '13px', color: status.ok ? 'var(--accent-success)' : 'var(--accent-danger)' }}>
                         {status.text}
@@ -376,32 +443,32 @@ const PrinterSetup = ({ currentLanguage, translations, headers, products = [], s
                 <table>
                     <thead>
                         <tr>
-                            <th>{ar ? 'الفئة' : 'Category'}</th>
                             <th>{ar ? 'الطابعة' : 'Printer'}</th>
+                            <th>{ar ? 'الفئات' : 'Categories'}</th>
                             <th>{ar ? 'الزر' : 'Button'}</th>
+                            <th>{ar ? 'الاتصال' : 'Connection'}</th>
                             <th>{ar ? 'الطراز' : 'Model'}</th>
-                            <th>{ar ? 'عنوان IP' : 'IP Address'}</th>
-                            <th>{ar ? 'المنفذ' : 'Port'}</th>
                             <th>{ar ? 'إجراء' : 'Action'}</th>
                         </tr>
                     </thead>
                     <tbody>
                         {configs.map(config => (
-                            <tr key={config.category}>
-                                <td>{categoryLabel(config.category)}</td>
+                            <tr key={config.id}>
                                 <td>{config.name || '-'}</td>
-                                <td>{stationLabel(config.station)}</td>
+                                <td>{(config.categories || [config.category]).map(categoryLabel).join(', ')}</td>
+                                <td>{(config.categories || []).includes(RECEIPT) ? '-' : stationLabel(config.station)}</td>
+                                <td dir="ltr" style={{ textAlign: ar ? 'right' : 'left' }}>
+                                    {config.connection === 'windows' ? `Windows: ${config.windowsName}` : `${config.ip}:${config.port || 9100}`}
+                                </td>
                                 <td>{allModels.find(p => p.id === config.model)?.name || config.model || 'Generic Printer'}</td>
-                                <td>{config.ip}</td>
-                                <td>{config.port}</td>
                                 <td style={{ display: 'flex', gap: '6px' }}>
                                     <button className="action-btn" title={ar ? 'طباعة تجريبية' : 'Test print'} aria-label={ar ? 'طباعة تجريبية' : 'Test print'} onClick={() => handleTest(config)} disabled={!!testing}>
-                                        <i className={testing === config.category ? 'ri-loader-4-line' : 'ri-printer-line'}></i>
+                                        <i className={testing === config.id ? 'ri-loader-4-line' : 'ri-printer-line'}></i>
                                     </button>
-                                    <button className="action-btn" title={ar ? 'تعديل' : 'Edit'} aria-label={ar ? 'تعديل' : 'Edit'} onClick={() => setForm({ ...emptyForm, ...config, name: config.name || '', station: config.station || 'kitchen', brand: config.brand || 'Epson', model: config.model || 'epson-generic' })}>
+                                    <button className="action-btn" title={ar ? 'تعديل' : 'Edit'} aria-label={ar ? 'تعديل' : 'Edit'} onClick={() => editPrinter(config)}>
                                         <i className="ri-edit-line"></i>
                                     </button>
-                                    <button className="action-btn delete" title={ar ? 'حذف' : 'Delete'} aria-label={ar ? 'حذف' : 'Delete'} onClick={() => handleDelete(config.category)}>
+                                    <button className="action-btn delete" title={ar ? 'حذف' : 'Delete'} aria-label={ar ? 'حذف' : 'Delete'} onClick={() => handleDelete(config.id)}>
                                         <i className="ri-delete-bin-line"></i>
                                     </button>
                                 </td>
@@ -409,7 +476,7 @@ const PrinterSetup = ({ currentLanguage, translations, headers, products = [], s
                         ))}
                         {configs.length === 0 && (
                             <tr>
-                                <td colSpan="7" style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
+                                <td colSpan="6" style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
                                     {ar ? 'لا توجد طابعات مضافة' : 'No printers configured'}
                                 </td>
                             </tr>
