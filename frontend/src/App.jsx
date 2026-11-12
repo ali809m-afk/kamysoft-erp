@@ -814,6 +814,8 @@ export default function App() {
     const zatcaConnected = ((zatcaConn && zatcaConn.mode) || 'connected') === 'connected';
     // Restaurant: is a printer assigned to the separate Juice button?
     const [hasJuicePrinter, setHasJuicePrinter] = useState(false);
+    // What was printed automatically when the last sale was paid (shown in the invoice window)
+    const [autoPrintStatus, setAutoPrintStatus] = useState([]);
 
     const [reportSubTab, setReportSubTab] = useState('daily');
     const [quotations, setQuotations] = useState([]);
@@ -1412,8 +1414,11 @@ export default function App() {
                         const ar = currentLanguage === 'ar';
                         const lines = [];
                         (printRes.results || []).forEach(r => lines.push(r.success
-                            ? `✓ ${r.printer} (${r.lines})`
+                            ? `✓ ${r.printer} (${r.lines})${r.queued ? (ar ? ' - أُرسلت لوكيل الطباعة' : ' - sent to print agent') : ''}`
                             : `✗ ${r.printer} (${r.address}): ${r.error}`));
+                        if ((printRes.results || []).some(r => r.queued && r.agentOnline === false)) {
+                            lines.push(ar ? '⚠ وكيل الطباعة غير متصل؛ ستُطبع عند اتصاله' : '⚠ The print agent is offline; tickets will print when it reconnects');
+                        }
                         if ((printRes.unrouted || []).length > 0) {
                             lines.push((ar ? 'بدون طابعة: ' : 'No printer for: ') + printRes.unrouted.map(u => `${u.name}${u.category ? ` [${u.category}]` : ''}`).join(', '));
                         }
@@ -1434,6 +1439,41 @@ export default function App() {
                     });
             })
             .catch(err => alert((currentLanguage === 'ar' ? 'تعذر الإرسال للمطبخ: ' : 'Could not send to the kitchen: ') + err.message));
+    };
+
+    // Runs right after a sale is saved: kitchen tickets for anything not sent yet (all
+    // printers, marked PAID), then the invoice on the receipt printer. Results are shown
+    // in the invoice window. Without a receipt printer the normal print dialog is used.
+    const printOnPayment = async (inv, restaurantOrder) => {
+        const ar = currentLanguage === 'ar';
+        const status = [];
+        const push = (line) => { if (!status.includes(line)) { status.push(line); setAutoPrintStatus([...status]); } };
+        const agentOffline = ar ? '⚠ وكيل الطباعة غير متصل؛ ستُطبع عند اتصاله' : '⚠ The print agent is offline; tickets will print when it reconnects';
+        const how = (r) => (r.queued ? (ar ? 'أُرسلت لوكيل الطباعة' : 'sent to print agent') : (ar ? 'طُبعت' : 'printed'));
+
+        if (restaurantOrder && restaurantOrder.items.length > 0) {
+            try {
+                const saveRes = await fetch('/api/restaurant/orders', { method: 'POST', headers, body: JSON.stringify({ ...restaurantOrder, id: restaurantOrder.id || `REST-${Date.now()}` }) });
+                const saved = await saveRes.json();
+                if (!saveRes.ok) throw new Error(saved.error || 'Could not save the order');
+                const kot = await (await fetch(`/api/restaurant/orders/${saved.id}/print-kot`, { method: 'POST', headers, body: JSON.stringify({ station: 'all', paid: true }) })).json();
+                (kot.results || []).forEach(r => push(r.success ? `✓ ${r.printer}: ${how(r)} (${r.lines})` : `✗ ${r.printer}: ${r.error}`));
+                if ((kot.unrouted || []).length > 0) push((ar ? 'بدون طابعة: ' : 'No printer for: ') + kot.unrouted.map(u => u.name).join(', '));
+                if ((kot.results || []).some(r => r.queued && r.agentOnline === false)) push(agentOffline);
+                await fetch(`/api/restaurant/orders/${saved.id}/close`, { method: 'POST', headers, body: JSON.stringify({ invoiceId: inv.id }) });
+            } catch (err) {
+                push((ar ? '✗ المطبخ: ' : '✗ Kitchen: ') + err.message);
+            }
+        }
+
+        try {
+            const r = await (await fetch(`/api/invoices/${inv.id}/print-receipt`, { method: 'POST', headers })).json();
+            if (r.noPrinter) return;
+            push(r.success ? `✓ ${r.printer}: ${ar ? 'الفاتورة' : 'invoice'} ${how(r)}` : `✗ ${r.printer}: ${r.error}`);
+            if (r.queued && r.agentOnline === false) push(agentOffline);
+        } catch (err) {
+            push((ar ? '✗ طابعة الفواتير: ' : '✗ Receipt printer: ') + err.message);
+        }
     };
 
     const processCheckout = () => {
@@ -1477,6 +1517,11 @@ export default function App() {
             serviceDuration: settings.businessType === 'services' && settings.enableServiceDuration ? serviceDuration : undefined
         };
 
+        // Restaurant: the order as it is now, so unsent items can go to the kitchen with the payment
+        const restaurantOrderAtPayment = settings.businessType === 'restaurant' && activeTab !== 'b2bsale'
+            ? { ...buildRestaurantOrder(), tableNumber: tableNum || (currentLanguage === 'ar' ? 'سفري' : 'Takeaway') }
+            : null;
+
         fetch('/api/invoices', {
             method: 'POST',
             headers: headers,
@@ -1488,12 +1533,11 @@ export default function App() {
         })
         .then(newInv => {
             let finalInv = newInv;
-            if (activeRestaurantOrderId) {
-                const closingId = activeRestaurantOrderId;
-                fetch(`/api/restaurant/orders/${closingId}/close`, { method: 'POST', headers, body: JSON.stringify({ invoiceId: newInv.id }) })
-                    .catch(err => console.error('Could not close table order', err));
-                setActiveRestaurantOrderId(null);
-            }
+            // At the same time as the payment: unsent items go to the kitchen printers and
+            // the invoice prints on the cashier's receipt printer (when one is set up)
+            setAutoPrintStatus([]);
+            printOnPayment(newInv, restaurantOrderAtPayment);
+            setActiveRestaurantOrderId(null);
             setInvoices([...invoices, newInv]);
             setActiveInvoice(newInv);
             setInvoiceFormat(activeTab === 'b2bsale' ? 'a4' : 'thermal'); 
@@ -3562,6 +3606,15 @@ const handleB2BSubmit = () => {
                                 </div>
                             );
                         })()}
+
+                        {/* What printed automatically with the payment (kitchen + receipt printers) */}
+                        {invoiceSource === 'pos' && autoPrintStatus.length > 0 && (
+                            <div role="status" style={{ marginBottom: '12px', padding: '10px 12px', borderRadius: '6px', border: '1px solid var(--glass-border)', fontSize: '13px', lineHeight: 1.7 }}>
+                                {autoPrintStatus.map(line => (
+                                    <div key={line} style={{ color: line.startsWith('✓') ? 'var(--accent-success)' : line.startsWith('✗') ? 'var(--accent-danger)' : 'var(--accent-gold)' }}>{line}</div>
+                                ))}
+                            </div>
+                        )}
 
                         {/* Interactive Buttons */}
                         {zatcaConnected ? (

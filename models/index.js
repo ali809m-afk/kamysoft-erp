@@ -655,6 +655,38 @@ const restaurantOrderSchema = new mongoose.Schema({
 restaurantOrderSchema.index({ id: 1, tenantId: 1 }, { unique: true });
 const RestaurantOrder = mongoose.model('RestaurantOrder', restaurantOrderSchema);
 
+// How a store prints kitchen tickets. 'direct': the server connects to the printers
+// itself (desktop app / server inside the restaurant). 'agent': tickets are queued and a
+// print agent running on a restaurant PC sends them to the printers (hosted website).
+const printAgentSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true, unique: true, index: true },
+    mode: { type: String, enum: ['direct', 'agent'], default: 'direct' },
+    keyHash: { type: String },        // sha256 of the agent key (the key itself is shown once)
+    lastSeenAt: { type: Date },
+    agentInfo: { type: String }       // e.g. "kamysoft-print-agent 1.0 on CASHIER-PC"
+});
+const PrintAgent = mongoose.model('PrintAgent', printAgentSchema);
+
+// Queued ticket for the print agent
+const printJobSchema = new mongoose.Schema({
+    id: { type: String, required: true },
+    tenantId: { type: String, required: true, index: true },
+    kind: { type: String, default: 'kot' },   // 'kot' | 'receipt' | 'test'
+    orderId: { type: String },
+    tableNumber: { type: String },
+    printer: { name: String, ip: String, port: Number },
+    lines: [{ text: String, bold: Boolean, align: String, qr: String }],
+    status: { type: String, enum: ['pending', 'printing', 'done', 'failed'], default: 'pending' },
+    error: { type: String },
+    attempts: { type: Number, default: 0 },
+    leasedUntil: { type: Date },
+    createdAt: { type: Date, default: Date.now },
+    finishedAt: { type: Date }
+});
+printJobSchema.index({ tenantId: 1, status: 1, createdAt: 1 });
+printJobSchema.index({ id: 1, tenantId: 1 }, { unique: true });
+const PrintJob = mongoose.model('PrintJob', printJobSchema);
+
 
 const flowerArrangementSchema = new mongoose.Schema({
     id: { type: String, required: true },
@@ -808,5 +840,5 @@ module.exports = {
     SubscriptionPayment,
     PropertyOwner,
     Property, Unit, Booking, GroupBlock, HotelService, PriceRule, MaintenanceTask, PropertyInvoice, LeaseContract, Lead, CustomDomain,
-    PrinterConfig, RestaurantOrder
+    PrinterConfig, RestaurantOrder, PrintAgent, PrintJob
 };

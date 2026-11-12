@@ -12,7 +12,7 @@ const path = require('path');
 const fs = require('fs');
 const mongoose = require('mongoose');
 const { uploadFile, getPresignedUrl } = require('../services/s3Service');
-const { User, Product, Invoice, Quotation, Expense, Asset, Customer, Employee, Supplier, Order, Settings, Inquiry, Warehouse, InventoryTx, JournalEntry, Voucher, Salary, PurchaseInvoice, ReturnInvoice, Account, SubscriptionPayment, PropertyOwner, Property, Unit, Booking, GroupBlock, HotelService, PriceRule, MaintenanceTask, PropertyInvoice, LeaseContract, Lead, PrinterConfig, RestaurantOrder, FlowerArrangement, FlowerDelivery, MeasurementProfile, TailoringOrder } = require('../models');
+const { User, Product, Invoice, Quotation, Expense, Asset, Customer, Employee, Supplier, Order, Settings, Inquiry, Warehouse, InventoryTx, JournalEntry, Voucher, Salary, PurchaseInvoice, ReturnInvoice, Account, SubscriptionPayment, PropertyOwner, Property, Unit, Booking, GroupBlock, HotelService, PriceRule, MaintenanceTask, PropertyInvoice, LeaseContract, Lead, PrinterConfig, RestaurantOrder, PrintAgent, PrintJob, FlowerArrangement, FlowerDelivery, MeasurementProfile, TailoringOrder } = require('../models');
 
 const ThermalPrinter = require('node-thermal-printer').printer;
 const PrinterTypes = require('node-thermal-printer').types;
@@ -4878,17 +4878,285 @@ const kitchenTime = () => new Date().toLocaleString('en-GB', {
 
 const isValidPrinterHost = (ip) => typeof ip === 'string' && /^[A-Za-z0-9.\-:]{1,253}$/.test(ip.trim());
 
-// Send ESC/POS lines to a network printer (raw TCP, usually port 9100)
-async function sendToNetworkPrinter(config, writeTicket) {
+// ---- Printing ---------------------------------------------------------------------------
+// Tickets are built as plain lines ({ text, bold, align } or { qr }) and then either
+// sent straight to the printer by this server ('direct': desktop app / server inside the
+// restaurant) or queued for the print agent running on a restaurant PC ('agent': the
+// hosted website, which cannot reach printers on the restaurant's network).
+const TICKET_WIDTH = 42;
+const RECEIPT_PRINTER_CATEGORY = '__receipt__';
+const AGENT_ONLINE_MS = 30000;
+const ruleLine = () => ({ text: '-'.repeat(TICKET_WIDTH) });
+// ESC/POS printers print Latin text only; Arabic would come out as garbage
+const latinText = (s) => String(s == null ? '' : s).replace(/[^\x20-\x7E]/g, '').replace(/\s*\/\s*$/, '').replace(/\s{2,}/g, ' ').trim();
+const padRow = (left, right) => {
+    const l = latinText(left), r = latinText(right);
+    return l + ' '.repeat(Math.max(1, TICKET_WIDTH - l.length - r.length)) + r;
+};
+const money = (n) => Number(n || 0).toFixed(2);
+
+async function printLinesDirect(config, lines) {
     const printer = new ThermalPrinter({
         type: PrinterTypes.EPSON,
-        interface: `tcp://${config.ip.trim()}:${Number(config.port) || 9100}`,
+        interface: `tcp://${String(config.ip).trim()}:${Number(config.port) || 9100}`,
         options: { timeout: 4000 }
     });
-    writeTicket(printer);
+    lines.forEach(l => {
+        if (l.qr) { printer.alignCenter(); printer.printQR(l.qr, { cellSize: 5, correction: 'M', model: 2 }); printer.newLine(); return; }
+        if (l.align === 'center') printer.alignCenter(); else if (l.align === 'right') printer.alignRight(); else printer.alignLeft();
+        printer.bold(!!l.bold);
+        printer.println(latinText(l.text));
+        printer.bold(false);
+    });
     printer.cut();
     await printer.execute();
 }
+
+if (!mockDb.printAgents) mockDb.printAgents = [];
+if (!mockDb.printJobs) mockDb.printJobs = [];
+const printStore = {
+    async getAgent(tenantId) {
+        if (global.isMongoConnected) return PrintAgent.findOne({ tenantId }).lean();
+        return mockDb.printAgents.find(a => a.tenantId === tenantId) || null;
+    },
+    async saveAgent(tenantId, patch) {
+        if (global.isMongoConnected) return PrintAgent.findOneAndUpdate({ tenantId }, { ...patch, tenantId }, { upsert: true, new: true }).lean();
+        let a = mockDb.printAgents.find(x => x.tenantId === tenantId);
+        if (!a) { a = { tenantId, mode: 'direct' }; mockDb.printAgents.push(a); }
+        Object.assign(a, patch);
+        return a;
+    },
+    async addJob(tenantId, job) {
+        const doc = { ...job, id: `PJ-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`, tenantId, status: 'pending', attempts: 0, createdAt: new Date() };
+        if (global.isMongoConnected) await PrintJob.create(doc); else mockDb.printJobs.push(doc);
+        return doc;
+    },
+    // Hands pending jobs (and jobs whose agent vanished mid-print) to the agent
+    async claimJobs(tenantId, limit = 10) {
+        const now = new Date();
+        const lease = new Date(now.getTime() + 60000);
+        const claimable = { tenantId, $or: [{ status: 'pending' }, { status: 'printing', leasedUntil: { $lt: now } }] };
+        const claimed = [];
+        if (global.isMongoConnected) {
+            for (let i = 0; i < limit; i++) {
+                const job = await PrintJob.findOneAndUpdate(claimable, { status: 'printing', leasedUntil: lease, $inc: { attempts: 1 } }, { sort: { createdAt: 1 }, new: true }).lean();
+                if (!job) break;
+                claimed.push(job);
+            }
+            return claimed;
+        }
+        mockDb.printJobs
+            .filter(j => j.tenantId === tenantId && (j.status === 'pending' || (j.status === 'printing' && j.leasedUntil < now)))
+            .sort((a, b) => a.createdAt - b.createdAt).slice(0, limit)
+            .forEach(j => { j.status = 'printing'; j.leasedUntil = lease; j.attempts = (j.attempts || 0) + 1; claimed.push(j); });
+        return claimed;
+    },
+    async finishJob(tenantId, id, success, error) {
+        const patch = { status: success ? 'done' : 'failed', error: success ? '' : String(error || 'Printer did not respond').slice(0, 300), finishedAt: new Date(), leasedUntil: null };
+        if (global.isMongoConnected) return PrintJob.findOneAndUpdate({ id, tenantId }, patch, { new: true }).lean();
+        const j = mockDb.printJobs.find(x => x.tenantId === tenantId && x.id === id);
+        if (j) Object.assign(j, patch);
+        return j || null;
+    },
+    async retryJob(tenantId, id) {
+        if (global.isMongoConnected) return PrintJob.findOneAndUpdate({ id, tenantId, status: 'failed' }, { status: 'pending', error: '' }, { new: true }).lean();
+        const j = mockDb.printJobs.find(x => x.tenantId === tenantId && x.id === id && x.status === 'failed');
+        if (j) Object.assign(j, { status: 'pending', error: '' });
+        return j || null;
+    },
+    async summary(tenantId) {
+        const since = new Date(Date.now() - 24 * 3600 * 1000);
+        if (global.isMongoConnected) {
+            const [pending, failed] = await Promise.all([
+                PrintJob.countDocuments({ tenantId, status: { $in: ['pending', 'printing'] } }),
+                PrintJob.find({ tenantId, status: 'failed', createdAt: { $gte: since } }).sort({ createdAt: -1 }).limit(20).lean()
+            ]);
+            return { pending, failed };
+        }
+        const mine = mockDb.printJobs.filter(j => j.tenantId === tenantId);
+        return {
+            pending: mine.filter(j => ['pending', 'printing'].includes(j.status)).length,
+            failed: mine.filter(j => j.status === 'failed' && j.createdAt >= since).sort((a, b) => b.createdAt - a.createdAt).slice(0, 20)
+        };
+    }
+};
+
+const agentIsOnline = (agent) => !!(agent && agent.lastSeenAt && (Date.now() - new Date(agent.lastSeenAt).getTime()) < AGENT_ONLINE_MS);
+
+// Prints now ('direct') or queues for the print agent ('agent').
+// Returns { queued } or throws if a direct print fails.
+async function dispatchPrint(tenantId, config, lines, meta = {}) {
+    const agent = await printStore.getAgent(tenantId);
+    if (agent && agent.mode === 'agent') {
+        await printStore.addJob(tenantId, {
+            kind: meta.kind || 'kot', orderId: meta.orderId || '', tableNumber: meta.tableNumber || '',
+            printer: { name: config.name || config.category || '', ip: String(config.ip).trim(), port: Number(config.port) || 9100 },
+            lines
+        });
+        return { queued: true, agentOnline: agentIsOnline(agent) };
+    }
+    await printLinesDirect(config, lines);
+    return { queued: false };
+}
+
+function buildKitchenTicket(order, label, groupItems, paid) {
+    const lines = [
+        { text: '--- KITCHEN TICKET ---', bold: true, align: 'center' },
+        { text: String(label).toUpperCase(), bold: true, align: 'center' },
+        { text: `Table: ${order.tableNumber}   Order: ${order.id}`, align: 'center' },
+        { text: kitchenTime(), align: 'center' }
+    ];
+    if (paid) lines.push({ text: '*** PAID ***', bold: true, align: 'center' });
+    lines.push(ruleLine());
+    groupItems.forEach(item => {
+        const name = item.nameEN || item.name;
+        const delta = item.qty - item.printedQty;
+        lines.push({ text: delta > 0 ? `${delta}x ${name}` : `CANCEL ${-delta}x ${name}`, bold: true });
+    });
+    lines.push(ruleLine());
+    return lines;
+}
+
+// Agent authentication: header x-print-agent-key on the store's own address
+const hashAgentKey = (key) => crypto.createHash('sha256').update(String(key)).digest('hex');
+async function authenticatePrintAgent(req, res, next) {
+    try {
+        const key = req.headers['x-print-agent-key'];
+        if (!key) return res.status(401).json({ error: 'Print agent key required' });
+        const tenantId = getTenantId(req);
+        const agent = await printStore.getAgent(tenantId);
+        if (!agent || !agent.keyHash || !safeEqual(hashAgentKey(key), agent.keyHash)) {
+            return res.status(401).json({ error: 'Invalid print agent key for this store' });
+        }
+        req.tenantId = tenantId;
+        req.printAgent = agent;
+        next();
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+}
+
+// Store's printing method, agent status and failed tickets (Printer Setup page)
+router.get('/api/print-agent', authenticateToken, async (req, res) => {
+    try {
+        const agent = await printStore.getAgent(req.tenantId);
+        const { pending, failed } = await printStore.summary(req.tenantId);
+        res.json({
+            mode: (agent && agent.mode) || 'direct',
+            hasKey: !!(agent && agent.keyHash),
+            online: agentIsOnline(agent),
+            lastSeenAt: agent && agent.lastSeenAt,
+            agentInfo: agent && agent.agentInfo,
+            pending,
+            failed: failed.map(j => ({ id: j.id, kind: j.kind, printer: j.printer, tableNumber: j.tableNumber, orderId: j.orderId, error: j.error, createdAt: j.createdAt }))
+        });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/api/print-agent/mode', authenticateToken, requirePrinterAdmin, async (req, res) => {
+    try {
+        const mode = (req.body && req.body.mode) === 'agent' ? 'agent' : 'direct';
+        await printStore.saveAgent(req.tenantId, { mode });
+        res.json({ success: true, mode });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// New agent key (shown once; only its hash is stored). Replaces any previous key.
+router.post('/api/print-agent/key', authenticateToken, requirePrinterAdmin, async (req, res) => {
+    try {
+        const key = 'pa_' + crypto.randomBytes(24).toString('hex');
+        await printStore.saveAgent(req.tenantId, { keyHash: hashAgentKey(key) });
+        res.json({ success: true, key });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/api/print-agent/jobs/:id/retry', authenticateToken, async (req, res) => {
+    try {
+        const job = await printStore.retryJob(req.tenantId, req.params.id);
+        res.json({ success: !!job });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Agent: fetch tickets to print (also marks the agent as online)
+router.get('/api/print-agent/jobs', authenticatePrintAgent, async (req, res) => {
+    try {
+        await printStore.saveAgent(req.tenantId, { lastSeenAt: new Date(), agentInfo: String(req.headers['x-print-agent-info'] || '').slice(0, 120) });
+        const jobs = await printStore.claimJobs(req.tenantId, 10);
+        res.json({ jobs: jobs.map(j => ({ id: j.id, kind: j.kind, printer: j.printer, lines: j.lines })) });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Agent: report the result of one ticket
+router.post('/api/print-agent/jobs/:id/result', authenticatePrintAgent, async (req, res) => {
+    try {
+        const { success, error } = req.body || {};
+        const job = await printStore.finishJob(req.tenantId, req.params.id, !!success, error);
+        res.json({ success: !!job });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Print an invoice on the cashier's receipt printer (category __receipt__)
+router.post('/api/invoices/:id/print-receipt', authenticateToken, async (req, res) => {
+    try {
+        const tenantId = req.tenantId;
+        const printers = await restaurantStore.listPrinters(tenantId);
+        const receiptPrinter = printers.find(p => p.category === RECEIPT_PRINTER_CATEGORY);
+        if (!receiptPrinter) return res.json({ success: false, noPrinter: true, error: 'No receipt printer is set up' });
+
+        let invoice, settings, products;
+        if (global.isMongoConnected) {
+            invoice = await Invoice.findOne({ id: req.params.id, tenantId }).lean();
+            settings = await Settings.findOne({ tenantId }).lean();
+            products = await Product.find({ tenantId }).lean();
+        } else {
+            invoice = mockDb.invoices.find(i => i.id === req.params.id && i.tenantId === tenantId);
+            settings = (mockDb.settingsTenant && mockDb.settingsTenant[tenantId]) || mockDb.settings;
+            products = mockDb.products.filter(p => p.tenantId === tenantId);
+        }
+        if (!invoice) return res.status(404).json({ success: false, error: 'Invoice not found' });
+        settings = settings || {};
+
+        const discount = Number(invoice.discount) || 0;
+        const vat = Number(invoice.vat) || 0;
+        const total = Number(invoice.total) || 0;
+        const lines = [
+            { text: latinText(settings.businessName) || 'Store', bold: true, align: 'center' },
+            { text: 'Simplified Tax Invoice', align: 'center' },
+            settings.vatNumber ? { text: `VAT No: ${settings.vatNumber}`, align: 'center' } : null,
+            settings.crNumber ? { text: `CR No: ${settings.crNumber}`, align: 'center' } : null,
+            ruleLine(),
+            { text: `Invoice: ${invoice.id}` },
+            { text: `Date: ${invoice.date}` },
+            invoice.tableNumber ? { text: `Table: ${invoice.tableNumber}` } : null,
+            { text: `Payment: ${latinText(String(invoice.paymentMethod || 'cash').split('(')[0]) || 'cash'}` },
+            ruleLine()
+        ].filter(Boolean);
+        (invoice.items || []).forEach(it => {
+            const product = products.find(p => String(p.id) === String(it.id));
+            const name = latinText((product && product.nameEN) || it.name) || 'Item';
+            lines.push({ text: name });
+            lines.push({ text: padRow(`  ${it.qty} x ${money(it.price)}`, money(it.price * it.qty)) });
+        });
+        lines.push(ruleLine());
+        lines.push({ text: padRow('Subtotal (excl. VAT)', money(total - vat + discount)) });
+        if (discount > 0) lines.push({ text: padRow('Discount', '-' + money(discount)) });
+        lines.push({ text: padRow(`VAT ${settings.taxRate || 15}%`, money(vat)) });
+        lines.push({ text: padRow('TOTAL (SAR)', money(total)), bold: true });
+        lines.push(ruleLine());
+        if (invoice.qrCode) lines.push({ qr: invoice.qrCode });
+        lines.push({ text: 'Thank you for your visit', align: 'center' });
+
+        try {
+            const r = await dispatchPrint(tenantId, receiptPrinter, lines, { kind: 'receipt', orderId: invoice.id, tableNumber: invoice.tableNumber || '' });
+            res.json({ success: true, queued: r.queued, agentOnline: r.agentOnline, printer: receiptPrinter.name || 'Cashier' });
+        } catch (err) {
+            res.json({ success: false, printer: receiptPrinter.name || 'Cashier', error: err.message || 'Printer did not respond' });
+        }
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
 
 // Get Printer Configs
 router.get('/api/printers', authenticateToken, async (req, res) => {
@@ -4925,16 +5193,16 @@ router.post('/api/printers/test', authenticateToken, requirePrinterAdmin, async 
     const { ip, port, name, category } = req.body || {};
     if (!isValidPrinterHost(ip)) return res.status(400).json({ success: false, error: 'A valid printer IP address or host name is required' });
     try {
-        await sendToNetworkPrinter({ ip, port }, (printer) => {
-            printer.alignCenter();
-            printer.println('--- PRINTER TEST ---');
-            printer.println(name || 'Kitchen printer');
-            printer.println(`Category: ${category === FALLBACK_PRINTER_CATEGORY ? 'All other items' : (category || '-')}`);
-            printer.println(`${ip}:${Number(port) || 9100}`);
-            printer.println(kitchenTime());
-            printer.drawLine();
-        });
-        res.json({ success: true });
+        const lines = [
+            { text: '--- PRINTER TEST ---', bold: true, align: 'center' },
+            { text: name || 'Kitchen printer', align: 'center' },
+            { text: `Category: ${category === FALLBACK_PRINTER_CATEGORY ? 'All other items' : category === RECEIPT_PRINTER_CATEGORY ? 'Receipts / invoices' : (category || '-')}`, align: 'center' },
+            { text: `${ip}:${Number(port) || 9100}`, align: 'center' },
+            { text: kitchenTime(), align: 'center' },
+            ruleLine()
+        ];
+        const r = await dispatchPrint(req.tenantId, { ip, port, name, category }, lines, { kind: 'test' });
+        res.json({ success: true, queued: r.queued, agentOnline: r.agentOnline });
     } catch (err) {
         res.json({ success: false, error: err.message || 'Printer did not respond' });
     }
@@ -4971,7 +5239,7 @@ router.post('/api/restaurant/orders', authenticateToken, async (req, res) => {
         if (!Array.isArray(items)) return res.status(400).json({ error: 'Items are required' });
 
         let existing = id ? await restaurantStore.getOrder(req.tenantId, id) : null;
-        if (!existing) existing = await restaurantStore.findOpenOrderByTable(req.tenantId, String(tableNumber));
+        if (!existing && !id) existing = await restaurantStore.findOpenOrderByTable(req.tenantId, String(tableNumber));
         if (existing && existing.status !== 'Open') existing = null;
 
         const previous = (existing && existing.items) || [];
@@ -5046,7 +5314,9 @@ router.post('/api/restaurant/orders/:id/print-kot', authenticateToken, async (re
         const order = await restaurantStore.getOrder(req.tenantId, req.params.id);
         if (!order) return res.status(404).json({ error: 'Order not found' });
 
-        const station = (req.body && req.body.station) === 'juice' ? 'juice' : 'kitchen';
+        const requested = req.body && req.body.station;
+        const station = requested === 'juice' || requested === 'all' ? requested : 'kitchen';
+        const paid = !!(req.body && req.body.paid);
         const stationOf = (c) => (c && c.station === 'juice' ? 'juice' : 'kitchen');
         const printerConfigs = await restaurantStore.listPrinters(req.tenantId);
         const fallback = printerConfigs.find(c => c.category === FALLBACK_PRINTER_CATEGORY);
@@ -5062,13 +5332,13 @@ router.post('/api/restaurant/orders/:id/print-kot', authenticateToken, async (re
         const unrouted = [];
         const waitingForOtherButton = [];
         pending.forEach(item => {
-            const config = printerConfigs.find(c => c.category !== FALLBACK_PRINTER_CATEGORY && normCategory(c.category) === normCategory(item.category)) || fallback;
+            const config = printerConfigs.find(c => c.category !== FALLBACK_PRINTER_CATEGORY && c.category !== RECEIPT_PRINTER_CATEGORY && normCategory(c.category) === normCategory(item.category)) || fallback;
             if (!config || !config.ip) {
                 // Items without any printer are reported on the main (kitchen) button only
-                if (station === 'kitchen') unrouted.push({ name: item.nameEN || item.name, category: item.category || '' });
+                if (station !== 'juice') unrouted.push({ name: item.nameEN || item.name, category: item.category || '' });
                 return;
             }
-            if (stationOf(config) !== station) { waitingForOtherButton.push({ name: item.nameEN || item.name, printer: config.name || config.category }); return; }
+            if (station !== 'all' && stationOf(config) !== station) { waitingForOtherButton.push({ name: item.nameEN || item.name, printer: config.name || config.category }); return; }
             const key = `${config.ip.trim()}:${Number(config.port) || 9100}`;
             if (!groups.has(key)) groups.set(key, { config, items: [] });
             groups.get(key).items.push(item);
@@ -5078,30 +5348,13 @@ router.post('/api/restaurant/orders/:id/print-kot', authenticateToken, async (re
         for (const { config, items: groupItems } of groups.values()) {
             const label = config.name || (config.category === FALLBACK_PRINTER_CATEGORY ? 'Default printer' : config.category);
             try {
-                await sendToNetworkPrinter(config, (printer) => {
-                    printer.alignCenter();
-                    printer.bold(true);
-                    printer.println('--- KITCHEN TICKET ---');
-                    printer.println(label.toUpperCase());
-                    printer.bold(false);
-                    printer.println(`Table: ${order.tableNumber}   Order: ${order.id}`);
-                    printer.println(kitchenTime());
-                    printer.drawLine();
-                    printer.alignLeft();
-                    groupItems.forEach(item => {
-                        // English name: ESC/POS printers can't render Arabic text without an image renderer
-                        const name = item.nameEN || item.name;
-                        const delta = item.qty - item.printedQty;
-                        if (delta > 0) printer.println(`${delta}x ${name}`);
-                        else printer.println(`CANCEL ${-delta}x ${name}`);
-                    });
-                    printer.drawLine();
-                });
+                const r = await dispatchPrint(req.tenantId, config, buildKitchenTicket(order, label, groupItems, paid), { kind: 'kot', orderId: order.id, tableNumber: order.tableNumber });
+                // Queued tickets count as sent; a failed one can be re-printed from Printer Setup
                 groupItems.forEach(gi => {
                     const target = items.find(i => i.productId === gi.productId);
                     target.printedQty = target.qty;
                 });
-                results.push({ printer: label, address: `${config.ip}:${config.port || 9100}`, success: true, lines: groupItems.length });
+                results.push({ printer: label, address: `${config.ip}:${config.port || 9100}`, success: true, queued: r.queued, agentOnline: r.agentOnline, lines: groupItems.length });
             } catch (err) {
                 results.push({ printer: label, address: `${config.ip}:${config.port || 9100}`, success: false, error: err.message || 'Printer did not respond', lines: groupItems.length });
             }
